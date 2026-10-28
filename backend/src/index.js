@@ -7,7 +7,7 @@ import resumeRouter from './routes/resume.js';
 import authRouter from './routes/auth.js';
 import extractRouter from './routes/extract.js';
 import profileRouter from './routes/profile.js';
-import db from './db.js';
+import db, { initDb } from './db.js';
 import { consolidateFixedAnswerRows } from './fixedAnswers.js';
 
 const app = express();
@@ -29,8 +29,6 @@ function migrateFixedAnswersOnStartup() {
   }
 }
 
-migrateFixedAnswersOnStartup();
-
 app.use(
   cors({
     origin: true,
@@ -40,7 +38,11 @@ app.use(
 app.use(express.json({ limit: '2mb' }));
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, name: 'King Star API' });
+  res.json({
+    ok: true,
+    name: 'King Star API',
+    storage: process.env.DATABASE_URL || process.env.POSTGRES_URL ? 'postgres' : 'file',
+  });
 });
 
 app.use('/api/jobs', jobsRouter);
@@ -55,6 +57,17 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: err.message || 'Internal error' });
 });
 
-app.listen(PORT, () => {
-  console.log(`King Star API listening on http://localhost:${PORT}`);
+async function start() {
+  await initDb();
+  migrateFixedAnswersOnStartup();
+  app.listen(PORT, () => {
+    console.log(`King Star API listening on http://localhost:${PORT}`);
+  });
+}
+
+start().catch((err) => {
+  console.error('Failed to start API:', err);
+  process.exit(1);
 });
+
+export default app;

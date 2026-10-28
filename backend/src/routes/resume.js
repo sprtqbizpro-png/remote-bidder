@@ -2,12 +2,25 @@ import { Router } from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import { fileURLToPath } from 'url';
+import os from 'os';
 import { uploadResume, isDriveConnected } from '../googleDrive.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const uploadDir = path.join(__dirname, '..', '..', 'data', 'uploads');
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+function resolveUploadDir() {
+  const preferred = path.join(process.cwd(), 'data', 'uploads');
+  try {
+    fs.mkdirSync(preferred, { recursive: true });
+    const probe = path.join(preferred, '.write-test');
+    fs.writeFileSync(probe, 'ok');
+    fs.unlinkSync(probe);
+    return preferred;
+  } catch {
+    const fallback = path.join(os.tmpdir(), 'king-star-uploads');
+    fs.mkdirSync(fallback, { recursive: true });
+    return fallback;
+  }
+}
+
+const uploadDir = resolveUploadDir();
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadDir),

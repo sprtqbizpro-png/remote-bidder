@@ -1,13 +1,12 @@
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import os from 'os';
+import { neon } from '@neondatabase/serverless';
 import { detectQuestionIntent } from './fixedAnswers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = path.join(__dirname, '..', 'data');
-if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-
-const DB_PATH = path.join(dataDir, 'hidden-star.json');
+const STORE_ID = 'default';
 
 const DEFAULT = {
   applied_jobs: [],
@@ -19,25 +18,163 @@ const DEFAULT = {
   profiles: {},
 };
 
-function read() {
-  try {
-    if (!fs.existsSync(DB_PATH)) {
-      write(DEFAULT);
-      return structuredClone(DEFAULT);
+/** @type {ReturnType<typeof structuredClone>|null} */
+let state = null;
+/** @type {Promise<void>|null} */
+let readyPromise = null;
+/** @type {((data: object) => Promise<void>)|null} */
+let persistFn = null;
+let writeQueue = Promise.resolve();
+
+function isFsReadonlyError(err) {
+  return ['EACCES', 'EPERM', 'EROFS', 'ENOENT'].includes(err?.code);
+}
+
+function tryWritableDbPath(dir) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const probe = path.join(dir, `.write-test-${process.pid}`);
+  fs.writeFileSync(probe, 'ok');
+  fs.unlinkSync(probe);
+  return path.join(dir, 'hidden-star.json');
+}
+
+function resolveFileDbPath() {
+  if (process.env.DATA_DIR) {
+    return tryWritableDbPath(path.resolve(process.env.DATA_DIR));
+  }
+
+  const candidates = [
+    path.join(__dirname, '..', 'data'),
+    path.join(process.cwd(), 'data'),
+  ];
+
+  let lastErr = null;
+  for (const dir of candidates) {
+    try {
+      return tryWritableDbPath(dir);
+    } catch (err) {
+      lastErr = err;
     }
-    const raw = fs.readFileSync(DB_PATH, 'utf8');
-    return { ...structuredClone(DEFAULT), ...JSON.parse(raw) };
-  } catch {
-    return structuredClone(DEFAULT);
+  }
+
+  if (lastErr && !isFsReadonlyError(lastErr)) {
+    console.warn('[db] Unexpected data-dir error:', lastErr.message);
+  }
+
+  const fallbackDir = path.join(os.tmpdir(), 'king-star-data');
+  console.warn(
+    `[db] Package data dir not writable (${lastErr?.code || lastErr?.message}); using ${fallbackDir}. Set DATABASE_URL for durable storage on Vercel.`
+  );
+  return tryWritableDbPath(fallbackDir);
+}
+
+function createFilePersist(dbPath) {
+  return {
+    async load() {
+      try {
+        if (!fs.existsSync(dbPath)) {
+          fs.writeFileSync(dbPath, JSON.stringify(DEFAULT, null, 2), 'utf8');
+          return structuredClone(DEFAULT);
+        }
+        const raw = fs.readFileSync(dbPath, 'utf8');
+        return { ...structuredClone(DEFAULT), ...JSON.parse(raw) };
+      } catch {
+        return structuredClone(DEFAULT);
+      }
+    },
+    async save(data) {
+      fs.writeFileSync(dbPath, JSON.stringify(data, null, 2), 'utf8');
+    },
+  };
+}
+
+function createPostgresPersist(databaseUrl) {
+  const sql = neon(databaseUrl);
+  return {
+    async load() {
+      await sql`
+        CREATE TABLE IF NOT EXISTS king_star_store (
+          id TEXT PRIMARY KEY,
+          data JSONB NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      const rows = await sql`
+        SELECT data FROM king_star_store WHERE id = ${STORE_ID} LIMIT 1
+      `;
+      if (!rows.length) {
+        const seed = structuredClone(DEFAULT);
+        await sql`
+          INSERT INTO king_star_store (id, data)
+          VALUES (${STORE_ID}, ${seed})
+          ON CONFLICT (id) DO NOTHING
+        `;
+        return seed;
+      }
+      return { ...structuredClone(DEFAULT), ...rows[0].data };
+    },
+    async save(data) {
+      await sql`
+        INSERT INTO king_star_store (id, data, updated_at)
+        VALUES (${STORE_ID}, ${data}, NOW())
+        ON CONFLICT (id) DO UPDATE
+        SET data = EXCLUDED.data, updated_at = NOW()
+      `;
+    },
+  };
+}
+
+function ensureReady() {
+  if (!state) {
+    throw new Error('Database not initialized. Call await initDb() before handling requests.');
   }
 }
 
+function read() {
+  ensureReady();
+  return state;
+}
+
 function write(data) {
-  fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2), 'utf8');
+  ensureReady();
+  state = data;
+  if (!persistFn) return;
+  writeQueue = writeQueue
+    .then(() => persistFn(structuredClone(state)))
+    .catch((err) => {
+      console.error('[db] persist failed:', err?.message || err);
+    });
 }
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+/**
+ * Initialize in-memory store and persistence backend.
+ * Uses Postgres when DATABASE_URL is set (Vercel); otherwise local JSON file.
+ */
+export async function initDb() {
+  if (readyPromise) return readyPromise;
+  readyPromise = (async () => {
+    const databaseUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+    const backend = databaseUrl
+      ? createPostgresPersist(databaseUrl)
+      : createFilePersist(resolveFileDbPath());
+    persistFn = (data) => backend.save(data);
+    state = await backend.load();
+    console.log(
+      databaseUrl
+        ? '[db] Using Postgres (DATABASE_URL)'
+        : '[db] Using local JSON file store'
+    );
+  })();
+  return readyPromise;
+}
+
+/** Wait for any queued persist operations (useful for migrate scripts). */
+export async function flushDb() {
+  await writeQueue;
 }
 
 export const db = {
@@ -248,6 +385,15 @@ export const db = {
     };
     write(data);
     return data.profiles[userId];
+  },
+
+  /** Replace entire store (used by migrate script). */
+  replaceAll(next) {
+    write({ ...structuredClone(DEFAULT), ...next });
+  },
+
+  snapshot() {
+    return structuredClone(read());
   },
 };
 
