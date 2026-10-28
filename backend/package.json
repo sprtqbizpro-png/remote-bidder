@@ -1,0 +1,20 @@
+{
+  "name": "hidden-star-api",
+  "version": "1.0.0",
+  "description": "Backend API for King Star job bidding system",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "googleapis": "^144.0.0",
+    "multer": "^1.4.5-lts.1",
+    "openai": "^4.77.0",
+    "uuid": "^11.0.3"
+  }
+}

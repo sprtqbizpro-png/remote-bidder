@@ -1,0 +1,13 @@
+{
+  "name": "hidden-star",
+  "version": "1.0.0",
+  "private": true,
+  "description": "King Star — Chrome extension + web app for job applications",
+  "scripts": {
+    "install:all": "npm install --prefix backend && npm install --prefix web",
+    "dev:api": "npm run dev --prefix backend",
+    "dev:web": "npm run dev --prefix web",
+    "start:api": "npm start --prefix backend",
+    "build:web": "npm run build --prefix web"
+  }
+}

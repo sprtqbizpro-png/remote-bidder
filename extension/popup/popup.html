@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>King Star</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <div class="logo" aria-hidden="true">★</div>
+      <div>
+        <h1>King Star</h1>
+        <p class="sub">Apply faster. Remember answers. Track apps.</p>
+      </div>
+    </header>
+
+    <section class="status-block">
+      <span id="api-status" class="pill">Checking API…</span>
+    </section>
+
+    <section class="actions">
+      <button type="button" id="btn-open" class="primary">
+        <span class="btn-title">Open panel</span>
+        <span class="btn-hint">Extract · autofill · save on this tab</span>
+      </button>
+      <button type="button" id="btn-extract" class="secondary">
+        <span class="btn-title">Quick extract</span>
+        <span class="btn-hint">Pull company, role & description</span>
+      </button>
+    </section>
+
+    <section class="settings">
+      <div class="section-label">Connection</div>
+      <label for="apiBaseUrl">API base URL</label>
+      <input id="apiBaseUrl" type="url" placeholder="http://localhost:3847" />
+
+      <label for="openaiApiKey">OpenAI API key</label>
+      <input
+        id="openaiApiKey"
+        type="password"
+        placeholder="Optional — for AI extract & new answers"
+        autocomplete="off"
+      />
+
+      <button type="button" id="btn-save" class="ghost">Save settings</button>
+      <p id="save-msg" class="msg" role="status"></p>
+    </section>
+
+    <footer>
+      <a id="web-link" href="http://localhost:5280" target="_blank" rel="noopener">
+        Open web app →
+      </a>
+    </footer>
+
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>

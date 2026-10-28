@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Resume Preview · King Star</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,500;0,9..40,600;0,9..40,700;0,9..40,800;1,9..40,500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="resume.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">HS</div>
+          <div class="brand-copy">
+            <p class="brand-name">King Star</p>
+            <p class="brand-sub">Resume preview</p>
+          </div>
+        </div>
+        <div class="actions">
+          <a id="btn-drive" class="btn btn-ghost" href="#" target="_blank" rel="noopener" hidden>
+            Open in Drive
+          </a>
+          <button type="button" id="btn-download" class="btn btn-secondary" disabled>Download</button>
+          <button type="button" id="btn-close" class="btn btn-primary">Done</button>
+        </div>
+      </header>
+
+      <main class="stage">
+        <aside class="meta-card" id="meta-card">
+          <div class="file-icon" aria-hidden="true">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+              <line x1="8" y1="13" x2="16" y2="13" />
+              <line x1="8" y1="17" x2="13" y2="17" />
+            </svg>
+          </div>
+          <h1 id="file-name">Loading resume…</h1>
+          <p id="file-meta" class="file-meta">Preparing preview</p>
+          <ul class="facts" id="file-facts"></ul>
+          <p class="hint">
+            This file is stored in your extension and attached automatically when you Autofill an application.
+          </p>
+        </aside>
+
+        <section class="viewer" id="viewer" aria-live="polite">
+          <div class="viewer-loading" id="viewer-loading">
+            <div class="spinner" aria-hidden="true"></div>
+            <p>Opening your resume…</p>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="vendor/mammoth.browser.min.js"></script>
+    <script src="resume.js" type="module"></script>
+  </body>
+</html>
