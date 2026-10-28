@@ -101,3 +101,40 @@ export function requireUser(req, res) {
   req.hsToken = token;
   return user;
 }
+
+/**
+ * Ensure a known admin account exists (email/password from env).
+ * Used so production Neon keeps the same login after migrate/redeploy.
+ */
+export function ensureAdminUserFromEnv() {
+  const email = String(process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+  const password = String(process.env.ADMIN_PASSWORD || '');
+  const name = String(process.env.ADMIN_NAME || '').trim() || 'Admin';
+  if (!email || !password) return null;
+
+  const existing = db.findUserByEmail(email);
+  if (existing) {
+    if (!verifyPassword(password, existing.passwordHash)) {
+      const data = db.snapshot();
+      const idx = data.users.findIndex((u) => u.id === existing.id);
+      if (idx >= 0) {
+        data.users[idx] = {
+          ...data.users[idx],
+          passwordHash: hashPassword(password),
+          name: name || data.users[idx].name,
+        };
+        db.replaceAll(data);
+      }
+    }
+    return publicUser(db.findUserByEmail(email));
+  }
+
+  const user = db.createUser({
+    id: uuidv4(),
+    email,
+    passwordHash: hashPassword(password),
+    name,
+  });
+  db.saveProfile(user.id, structuredClone(EMPTY_PROFILE));
+  return user;
+}

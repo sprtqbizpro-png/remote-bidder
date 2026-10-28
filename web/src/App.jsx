@@ -1,8 +1,12 @@
-import { NavLink, Outlet, Routes, Route, Navigate } from 'react-router-dom';
+import { NavLink, Outlet, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import JobsPage from './pages/JobsPage.jsx';
 import JobDetailPage from './pages/JobDetailPage.jsx';
 import SettingsPage from './pages/SettingsPage.jsx';
 import ProfilePage from './pages/ProfilePage.jsx';
+import SignInPage from './pages/SignInPage.jsx';
+import RequireAuth from './components/RequireAuth.jsx';
+import { api } from './api.js';
+import { clearSession, getStoredUser, getToken } from './auth.js';
 
 function IconJobs() {
   return (
@@ -23,6 +27,19 @@ function IconProfile() {
 }
 
 function AppLayout() {
+  const navigate = useNavigate();
+  const user = getStoredUser();
+
+  async function signOut() {
+    try {
+      if (getToken()) await api.signout();
+    } catch {
+      /* ignore */
+    }
+    clearSession();
+    navigate('/signin', { replace: true });
+  }
+
   return (
     <div className="jr-app">
       <aside className="jr-sidebar" aria-label="Main">
@@ -57,10 +74,16 @@ function AppLayout() {
         </nav>
 
         <div className="jr-sidebar-foot">
+          {user?.email ? <p className="jr-sidebar-user">{user.email}</p> : null}
           <p className="jr-sidebar-hint">Extension autofills applications using this profile.</p>
-          <NavLink to="/settings" className="jr-sidebar-settings">
-            Settings
-          </NavLink>
+          <div className="jr-sidebar-foot-actions">
+            <NavLink to="/settings" className="jr-sidebar-settings">
+              Settings
+            </NavLink>
+            <button type="button" className="jr-sidebar-signout" onClick={signOut}>
+              Sign out
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -74,12 +97,15 @@ function AppLayout() {
 export default function App() {
   return (
     <Routes>
-      <Route element={<AppLayout />}>
-        <Route path="/" element={<JobsPage />} />
-        <Route path="/jobs/:id" element={<JobDetailPage />} />
-        <Route path="/profile" element={<ProfilePage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="/signin" element={<SignInPage />} />
+      <Route element={<RequireAuth />}>
+        <Route element={<AppLayout />}>
+          <Route path="/" element={<JobsPage />} />
+          <Route path="/jobs/:id" element={<JobDetailPage />} />
+          <Route path="/profile" element={<ProfilePage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Route>
       </Route>
     </Routes>
   );

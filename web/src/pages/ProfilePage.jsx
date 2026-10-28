@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api.js';
-import { captureTokenFromUrl, clearSession, getToken, setSession } from '../auth.js';
+import { captureTokenFromUrl, clearSession, getToken } from '../auth.js';
 
 const STEPS = [
   { id: 'personal', label: 'Personal' },
@@ -123,6 +124,7 @@ function Select({ value, onChange, options, required, placeholder = 'Select' }) 
 }
 
 export default function ProfilePage() {
+  const navigate = useNavigate();
   const [step, setStep] = useState('personal');
   const [editing, setEditing] = useState(false);
   const [profile, setProfile] = useState(emptyProfile);
@@ -131,9 +133,6 @@ export default function ProfilePage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
-  const [authMode, setAuthMode] = useState('signin');
-  const [authForm, setAuthForm] = useState({ name: '', email: '', password: '' });
-
   const personal = profile.personal;
   const edu = profile.education?.[0] || emptyProfile().education[0];
   const ee = profile.equalEmployment;
@@ -193,24 +192,6 @@ export default function ProfilePage() {
   useEffect(() => {
     bootstrap();
   }, []);
-
-  async function onAuthSubmit(e) {
-    e.preventDefault();
-    setSaving(true);
-    setError('');
-    try {
-      const fn = authMode === 'signup' ? api.signup : api.signin;
-      const data = await fn(authForm);
-      setSession({ token: data.token, user: data.user });
-      setUser(data.user);
-      setToast(authMode === 'signup' ? 'Account created' : 'Signed in');
-      await bootstrap();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSaving(false);
-    }
-  }
 
   function patchPersonal(patch) {
     setProfile((prev) => ({ ...prev, personal: { ...prev.personal, ...patch } }));
@@ -314,67 +295,8 @@ export default function ProfilePage() {
   if (!user) {
     return (
       <div className="jr-profile-page">
-        <header className="jr-profile-head">
-          <h1>PROFILE</h1>
-        </header>
-        <div className="jr-profile-card jr-profile-auth">
-          <div className="jr-auth-mark" aria-hidden="true">
-            ★
-          </div>
-          <h2 className="jr-auth-title">
-            {authMode === 'signup' ? 'Create your account' : 'Welcome back'}
-          </h2>
-          <p className="jr-auth-sub">Sign in to manage your autofill profile.</p>
-          <div className="jr-auth-tabs">
-            <button
-              type="button"
-              className={authMode === 'signup' ? 'is-active' : ''}
-              onClick={() => setAuthMode('signup')}
-            >
-              Sign up
-            </button>
-            <button
-              type="button"
-              className={authMode === 'signin' ? 'is-active' : ''}
-              onClick={() => setAuthMode('signin')}
-            >
-              Sign in
-            </button>
-          </div>
-          <form className="jr-form" onSubmit={onAuthSubmit}>
-            {authMode === 'signup' && (
-              <Field label="Full name">
-                <input
-                  value={authForm.name}
-                  onChange={(e) => setAuthForm((f) => ({ ...f, name: e.target.value }))}
-                  placeholder="Anthony Fait"
-                />
-              </Field>
-            )}
-            <Field label="Email" required>
-              <input
-                type="email"
-                required
-                value={authForm.email}
-                onChange={(e) => setAuthForm((f) => ({ ...f, email: e.target.value }))}
-                placeholder="you@example.com"
-              />
-            </Field>
-            <Field label="Password" required>
-              <input
-                type="password"
-                required
-                minLength={6}
-                value={authForm.password}
-                onChange={(e) => setAuthForm((f) => ({ ...f, password: e.target.value }))}
-                placeholder="At least 6 characters"
-              />
-            </Field>
-            {error && <p className="jr-error">{error}</p>}
-            <button type="submit" className="jr-cta" disabled={saving}>
-              {saving ? 'Please wait…' : authMode === 'signup' ? 'Create account' : 'Sign in'}
-            </button>
-          </form>
+        <div className="jr-jobs-loading" aria-busy="true">
+          <div className="skeleton" style={{ height: 180, borderRadius: 18 }} />
         </div>
       </div>
     );
@@ -397,9 +319,15 @@ export default function ProfilePage() {
           <button
             type="button"
             className="jr-signout"
-            onClick={() => {
+            onClick={async () => {
+              try {
+                await api.signout();
+              } catch {
+                /* ignore */
+              }
               clearSession();
               setUser(null);
+              navigate('/signin', { replace: true });
             }}
           >
             Sign out

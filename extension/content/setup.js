@@ -215,8 +215,7 @@
       </div>`;
   }
 
-  function renderAuth({ mode = 'signup' } = {}) {
-    const isSignup = mode === 'signup';
+  function renderAuth({ mode = 'signin' } = {}) {
     return `
       <div class="hs-auth">
         <button type="button" class="hs-back" data-action="back-setup">
@@ -230,55 +229,25 @@
               <path d="M21.4 10.2c1.6 2.2 2.2 4.4 1.8 6.5 2.4-1.1 4.2-2.8 5.2-5.1-2.3.1-4.6-.2-7-1.4z" fill="#fff" stroke="#0b3d32" stroke-width="1.2" stroke-linejoin="round"/>
             </svg>
           </div>
-          <h2 class="hs-auth-title">${isSignup ? 'Create your account' : 'Welcome back'}</h2>
-          <p class="hs-auth-sub">${
-            isSignup
-              ? 'Save your profile once — autofill every application after that.'
-              : 'Sign in to unlock autofill with your saved profile.'
-          }</p>
+          <h2 class="hs-auth-title">Welcome back</h2>
+          <p class="hs-auth-sub">Sign in to unlock autofill with your saved profile.</p>
         </div>
 
-        <div class="hs-auth-tabs" role="tablist">
-          <button type="button" class="hs-auth-tab ${isSignup ? 'is-active' : ''}" data-action="auth-signup" role="tab" aria-selected="${isSignup}">
-            Sign up
-          </button>
-          <button type="button" class="hs-auth-tab ${!isSignup ? 'is-active' : ''}" data-action="auth-signin" role="tab" aria-selected="${!isSignup}">
-            Sign in
-          </button>
-        </div>
-
-        <form class="hs-auth-form hs-auth-card" data-auth-form="${mode}">
-          ${
-            isSignup
-              ? `<label class="hs-field">
-                  <span>Full name</span>
-                  <input name="name" type="text" autocomplete="name" placeholder="Anthony Fait" />
-                </label>`
-              : ''
-          }
+        <form class="hs-auth-form hs-auth-card" data-auth-form="signin">
           <label class="hs-field">
             <span>Email</span>
-            <input name="email" type="email" required autocomplete="email" placeholder="you@example.com" />
+            <input name="email" type="email" required autocomplete="email" placeholder="you@example.com" value="anthonyfait.digital@gmail.com" />
           </label>
           <label class="hs-field">
             <span>Password</span>
-            <input name="password" type="password" required minlength="6" autocomplete="${
-              isSignup ? 'new-password' : 'current-password'
-            }" placeholder="${isSignup ? 'At least 6 characters' : 'Your password'}" />
+            <input name="password" type="password" required minlength="6" autocomplete="current-password" placeholder="Your password" />
           </label>
           <button type="submit" class="hs-btn hs-auth-submit">
-            ${isSignup ? 'Create account' : 'Sign in'}
+            Sign in
           </button>
         </form>
 
-        <p class="hs-auth-switch">
-          ${
-            isSignup
-              ? `Already have an account? <button type="button" class="hs-linkish" data-action="auth-signin">Sign in</button>`
-              : `New here? <button type="button" class="hs-linkish" data-action="auth-signup">Create account</button>`
-          }
-        </p>
-        <p class="hs-auth-fine">Your answers stay private and are only used to autofill forms you choose.</p>
+        <p class="hs-auth-fine">Signup is disabled. Use your existing King Star account.</p>
       </div>`;
   }
 

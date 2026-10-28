@@ -6,7 +6,6 @@ import {
 } from '../googleDrive.js';
 import db from '../db.js';
 import {
-  signup,
   signin,
   logout,
   getBearerToken,
@@ -16,19 +15,10 @@ import { EMPTY_PROFILE } from '../profileSync.js';
 
 const router = Router();
 
-router.post('/signup', (req, res) => {
-  try {
-    const { email, password, name } = req.body || {};
-    const result = signup({ email, password, name });
-    res.status(201).json({
-      ok: true,
-      user: result.user,
-      token: result.token,
-      expiresAt: result.expiresAt,
-    });
-  } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
-  }
+router.post('/signup', (_req, res) => {
+  res.status(403).json({
+    error: 'Signup is disabled. Please sign in with an existing account.',
+  });
 });
 
 router.post('/signin', (req, res) => {

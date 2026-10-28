@@ -9,11 +9,13 @@ import extractRouter from './routes/extract.js';
 import profileRouter from './routes/profile.js';
 import db, { initDb } from './db.js';
 import { consolidateFixedAnswerRows } from './fixedAnswers.js';
+import { ensureAdminUserFromEnv } from './userAuth.js';
 
 const app = express();
 const PORT = process.env.PORT || 3847;
 
 let fixedAnswersMigrated = false;
+let adminUserEnsured = false;
 
 /** One-time (idempotent) collapse of legacy phrasing duplicates into intent rows. */
 function migrateFixedAnswersOnStartup() {
@@ -33,6 +35,16 @@ function migrateFixedAnswersOnStartup() {
   }
 }
 
+function ensureAdminOnce() {
+  if (adminUserEnsured) return;
+  try {
+    ensureAdminUserFromEnv();
+    adminUserEnsured = true;
+  } catch (err) {
+    console.warn('[auth] ensure admin user failed:', err?.message || err);
+  }
+}
+
 app.use(
   cors({
     origin: true,
@@ -46,6 +58,7 @@ app.use(async (_req, res, next) => {
   try {
     await initDb();
     migrateFixedAnswersOnStartup();
+    ensureAdminOnce();
     next();
   } catch (err) {
     console.error('[db] init failed:', err);
@@ -79,6 +92,7 @@ app.use((err, _req, res, _next) => {
 async function start() {
   await initDb();
   migrateFixedAnswersOnStartup();
+  ensureAdminOnce();
   app.listen(PORT, () => {
     console.log(`King Star API listening on http://localhost:${PORT}`);
   });

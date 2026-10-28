@@ -337,15 +337,10 @@ async function handleMessage(message, sender = {}) {
     }
 
     case 'AUTH_SIGNUP': {
-      const data = await apiJson('/api/auth/signup', {
-        method: 'POST',
-        body: message.payload || {},
-      });
-      await chrome.storage.local.set({
-        hsAuthToken: data.token,
-        hsUser: data.user,
-      });
-      return { ok: true, data };
+      return {
+        ok: false,
+        error: 'Signup is disabled. Please sign in with an existing account.',
+      };
     }
 
     case 'AUTH_SIGNIN': {

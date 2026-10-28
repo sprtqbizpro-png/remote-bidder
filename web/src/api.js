@@ -48,15 +48,14 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
-  signup: (payload) =>
-    request('/api/auth/signup', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
   signin: (payload) =>
     request('/api/auth/signin', {
       method: 'POST',
       body: JSON.stringify(payload),
+    }),
+  signout: () =>
+    request('/api/auth/signout', {
+      method: 'POST',
     }),
   me: () => request('/api/auth/me'),
   getProfile: () => request('/api/profile'),

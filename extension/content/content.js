@@ -23,7 +23,7 @@
   let session = { user: null, profileComplete: false, completedSteps: {} };
   let profileDraft = HS.Setup ? HS.Setup.emptyProfile() : null;
   let view = 'boot'; // boot | setup | auth | profile | apply
-  let authMode = 'signup';
+  let authMode = 'signin';
   let profileStep = 'personal';
   let infoTab = 'personal';
   let dockTop = null;
@@ -734,9 +734,9 @@
       btn.addEventListener('click', async (e) => {
         e.preventDefault();
         const action = btn.getAttribute('data-action');
-        if (action === 'open-auth') return renderView('auth', { authMode: 'signup' });
+        if (action === 'open-auth') return renderView('auth', { authMode: 'signin' });
         if (action === 'auth-signin') return renderView('auth', { authMode: 'signin' });
-        if (action === 'auth-signup') return renderView('auth', { authMode: 'signup' });
+        if (action === 'auth-signup') return renderView('auth', { authMode: 'signin' });
         if (action === 'back-setup') return renderView('setup');
         if (action === 'open-profile' || action === 'edit-profile') {
           setStatus('Opening King Star profile in a new tab…', false, 'busy');
@@ -811,19 +811,13 @@
   async function onAuthSubmit(e) {
     e.preventDefault();
     const form = e.target;
-    const mode = form.getAttribute('data-auth-form');
     const data = HS.Setup.formToObject(form);
-    setStatus(mode === 'signup' ? 'Creating account…' : 'Signing in…', false, 'busy');
+    setStatus('Signing in…', false, 'busy');
     try {
-      const type = mode === 'signup' ? 'AUTH_SIGNUP' : 'AUTH_SIGNIN';
-      const res = await send(type, data);
+      const res = await send('AUTH_SIGNIN', data);
       if (!res?.ok) throw new Error(res?.error || 'Auth failed');
       await refreshSession();
-      setStatus(
-        mode === 'signup' ? 'Account created. Complete your profile next.' : 'Signed in.',
-        false,
-        'ok'
-      );
+      setStatus('Signed in.', false, 'ok');
       await renderView('setup');
     } catch (err) {
       setStatus(err.message || 'Auth failed', true);
