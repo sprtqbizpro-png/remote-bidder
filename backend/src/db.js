@@ -153,9 +153,19 @@ function nowIso() {
 /**
  * Initialize in-memory store and persistence backend.
  * Uses Postgres when DATABASE_URL is set (Vercel); otherwise local JSON file.
+ * Safe to call on every request — concurrent callers share one load promise.
  */
 export async function initDb() {
-  if (readyPromise) return readyPromise;
+  if (state) return;
+  if (readyPromise) {
+    try {
+      await readyPromise;
+      if (state) return;
+    } catch {
+      // Allow retry after a failed cold-start init.
+      readyPromise = null;
+    }
+  }
   readyPromise = (async () => {
     const databaseUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
     const backend = databaseUrl
@@ -169,7 +179,12 @@ export async function initDb() {
         : '[db] Using local JSON file store'
     );
   })();
-  return readyPromise;
+  try {
+    await readyPromise;
+  } catch (err) {
+    readyPromise = null;
+    throw err;
+  }
 }
 
 /** Wait for any queued persist operations (useful for migrate scripts). */

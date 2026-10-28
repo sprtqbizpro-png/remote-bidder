@@ -13,8 +13,11 @@ import { consolidateFixedAnswerRows } from './fixedAnswers.js';
 const app = express();
 const PORT = process.env.PORT || 3847;
 
+let fixedAnswersMigrated = false;
+
 /** One-time (idempotent) collapse of legacy phrasing duplicates into intent rows. */
 function migrateFixedAnswersOnStartup() {
+  if (fixedAnswersMigrated) return;
   try {
     const before = db.listFixedAnswers();
     const { rows, changed } = consolidateFixedAnswerRows(before);
@@ -24,6 +27,7 @@ function migrateFixedAnswersOnStartup() {
         `Fixed answers consolidated: ${before.length} → ${rows.length} (meaning-based intents)`
       );
     }
+    fixedAnswersMigrated = true;
   } catch (err) {
     console.warn('Fixed-answer consolidate on startup failed:', err?.message || err);
   }
@@ -36,6 +40,21 @@ app.use(
   })
 );
 app.use(express.json({ limit: '2mb' }));
+
+/** Ensure DB is ready on every request (required for Vercel cold starts). */
+app.use(async (_req, res, next) => {
+  try {
+    await initDb();
+    migrateFixedAnswersOnStartup();
+    next();
+  } catch (err) {
+    console.error('[db] init failed:', err);
+    res.status(503).json({
+      error: err.message || 'Database unavailable',
+      hint: 'Check DATABASE_URL on Vercel and that Neon is reachable.',
+    });
+  }
+});
 
 app.get('/api/health', (_req, res) => {
   res.json({
@@ -65,9 +84,18 @@ async function start() {
   });
 }
 
-start().catch((err) => {
-  console.error('Failed to start API:', err);
-  process.exit(1);
-});
+const isVercel = !!(process.env.VERCEL || process.env.VERCEL_ENV);
+
+if (isVercel) {
+  // Platform serves `export default app`; middleware initializes DB per request.
+  initDb().then(migrateFixedAnswersOnStartup).catch((err) => {
+    console.error('[db] background init failed:', err);
+  });
+} else {
+  start().catch((err) => {
+    console.error('Failed to start API:', err);
+    process.exit(1);
+  });
+}
 
 export default app;
