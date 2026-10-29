@@ -373,9 +373,10 @@ async function handleMessage(message, sender = {}) {
     }
 
     case 'AUTH_SIGNUP': {
+      // Do not call the API — self-signup is blocked; owner provisions members.
       return {
         ok: false,
-        error: 'Signup is disabled. Please sign in with an existing account.',
+        error: 'Signup is disabled. Ask the owner to add your account, then sign in.',
       };
     }
 

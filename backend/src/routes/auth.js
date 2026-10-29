@@ -17,8 +17,9 @@ import { EMPTY_PROFILE } from '../profileSync.js';
 const router = Router();
 
 router.post('/signup', (_req, res) => {
+  // Public/extension self-signup is not allowed. Owner adds members in the web app.
   res.status(403).json({
-    error: 'Signup is disabled. Please sign in with an existing account.',
+    error: 'Signup is disabled. Ask the owner to add your account, then sign in.',
   });
 });
 

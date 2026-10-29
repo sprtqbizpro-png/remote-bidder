@@ -65,34 +65,12 @@ export function publicUser(user) {
   };
 }
 
-export function signup({ email, password, name }) {
-  const e = String(email || '').trim().toLowerCase();
-  const p = String(password || '');
-  if (!e || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) {
-    const err = new Error('Valid email is required');
-    err.status = 400;
-    throw err;
-  }
-  if (p.length < 6) {
-    const err = new Error('Password must be at least 6 characters');
-    err.status = 400;
-    throw err;
-  }
-  if (db.findUserByEmail(e)) {
-    const err = new Error('An account with this email already exists');
-    err.status = 409;
-    throw err;
-  }
-  const user = db.createUser({
-    id: uuidv4(),
-    email: e,
-    passwordHash: hashPassword(p),
-    name: name || e.split('@')[0],
-    role: e === getOwnerEmail() ? 'owner' : 'member',
-  });
-  db.saveProfile(user.id, structuredClone(EMPTY_PROFILE));
-  const session = issueSession(user.id);
-  return { user: publicUser(user), token: session.token, expiresAt: session.expiresAt };
+export function signup() {
+  const err = new Error(
+    'Signup is disabled. Ask the owner to add your account, then sign in.'
+  );
+  err.status = 403;
+  throw err;
 }
 
 export function signin({ email, password }) {

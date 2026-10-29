@@ -154,7 +154,7 @@
               <span class="hs-check-num">${accountDone ? '✓' : '1'}</span>
               <div class="hs-check-copy">
                 <div class="hs-check-title">Set up a King Star account</div>
-                <div class="hs-check-desc">${accountDone ? escapeHtml(user.email) : 'Sign up or sign in to sync your profile'}</div>
+                <div class="hs-check-desc">${accountDone ? escapeHtml(user.email) : 'Sign in with your King Star account'}</div>
               </div>
             </div>
             ${
