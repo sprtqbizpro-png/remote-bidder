@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import { api } from '../api.js';
 import { getStoredUser } from '../auth.js';
@@ -8,6 +8,7 @@ const emptyForm = { email: '', password: '', name: '' };
 export default function MembersPage() {
   const user = getStoredUser();
   const isOwner = !!user?.isOwner;
+  const passwordRef = useRef(null);
   const [members, setMembers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -15,6 +16,7 @@ export default function MembersPage() {
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [passwordOnly, setPasswordOnly] = useState(false);
 
   async function refresh() {
     try {
@@ -41,8 +43,9 @@ export default function MembersPage() {
     return <Navigate to="/" replace />;
   }
 
-  function startEdit(member) {
+  function startEdit(member, { focusPassword = false } = {}) {
     setEditingId(member.id);
+    setPasswordOnly(focusPassword);
     setForm({
       email: member.email || '',
       password: '',
@@ -50,10 +53,14 @@ export default function MembersPage() {
     });
     setMsg('');
     setError('');
+    if (focusPassword) {
+      requestAnimationFrame(() => passwordRef.current?.focus());
+    }
   }
 
   function cancelEdit() {
     setEditingId(null);
+    setPasswordOnly(false);
     setForm(emptyForm);
   }
 
@@ -64,13 +71,24 @@ export default function MembersPage() {
     setMsg('');
     try {
       if (editingId) {
-        const payload = {
-          email: form.email.trim(),
-          name: form.name.trim(),
-        };
-        if (form.password.trim()) payload.password = form.password;
+        const payload = {};
+        if (!passwordOnly) {
+          payload.email = form.email.trim();
+          payload.name = form.name.trim();
+        }
+        if (form.password.trim()) {
+          payload.password = form.password.trim();
+        } else if (passwordOnly) {
+          throw new Error('Enter a new password (at least 6 characters).');
+        }
+        if (!payload.password && passwordOnly) {
+          throw new Error('Enter a new password (at least 6 characters).');
+        }
+        if (!Object.keys(payload).length) {
+          throw new Error('Nothing to update.');
+        }
         await api.updateMember(editingId, payload);
-        setMsg('Member updated.');
+        setMsg(payload.password ? 'Password updated.' : 'Member updated.');
       } else {
         await api.createMember({
           email: form.email.trim(),
@@ -81,6 +99,7 @@ export default function MembersPage() {
       }
       setForm(emptyForm);
       setEditingId(null);
+      setPasswordOnly(false);
       await refresh();
     } catch (err) {
       setError(err.message);
@@ -107,13 +126,16 @@ export default function MembersPage() {
     }
   }
 
+  const editingMember = editingId ? members.find((m) => m.id === editingId) : null;
+
   return (
     <div className="jr-page-jobs">
       <header className="jr-page-head">
         <div className="jr-page-head-main">
           <h1>Members</h1>
           <p className="jr-members-lede">
-            Add people who can sign in to the web app and Chrome extension.
+            Add people who can sign in to the web app and Chrome extension. Everyone shares the
+            owner profile for autofill.
           </p>
         </div>
       </header>
@@ -122,45 +144,65 @@ export default function MembersPage() {
       {error && <p className="banner error">{error}</p>}
 
       <section className="jr-members-panel">
-        <h2>{editingId ? 'Edit member' : 'Add member'}</h2>
+        <h2>
+          {editingId
+            ? passwordOnly
+              ? `Change password — ${editingMember?.email || ''}`
+              : 'Edit member'
+            : 'Add member'}
+        </h2>
         <form className="jr-members-form" onSubmit={onSubmit}>
-          <label>
-            Name
+          {!passwordOnly ? (
+            <>
+              <label>
+                Name
+                <input
+                  type="text"
+                  value={form.name}
+                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                  placeholder="Display name"
+                  autoComplete="off"
+                />
+              </label>
+              <label>
+                Email
+                <input
+                  type="email"
+                  required
+                  value={form.email}
+                  onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                  placeholder="member@example.com"
+                  autoComplete="off"
+                  disabled={!!editingMember?.isOwner}
+                />
+              </label>
+            </>
+          ) : null}
+          <label className={passwordOnly ? 'jr-members-password-wide' : undefined}>
+            {editingId ? 'New password' : 'Password'}
+            {!editingId || passwordOnly ? null : (
+              <span className="jr-members-field-hint"> Optional — leave blank to keep current</span>
+            )}
             <input
-              type="text"
-              value={form.name}
-              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-              placeholder="Display name"
-              autoComplete="off"
-            />
-          </label>
-          <label>
-            Email
-            <input
-              type="email"
-              required
-              value={form.email}
-              onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-              placeholder="member@example.com"
-              autoComplete="off"
-              disabled={!!editingId && members.find((m) => m.id === editingId)?.isOwner}
-            />
-          </label>
-          <label>
-            Password{editingId ? ' (leave blank to keep)' : ''}
-            <input
+              ref={passwordRef}
               type="password"
-              required={!editingId}
-              minLength={editingId ? undefined : 6}
+              required={!editingId || passwordOnly}
+              minLength={6}
               value={form.password}
               onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-              placeholder={editingId ? '••••••••' : 'At least 6 characters'}
+              placeholder="At least 6 characters"
               autoComplete="new-password"
             />
           </label>
           <div className="jr-members-form-actions">
             <button type="submit" className="btn" disabled={saving}>
-              {saving ? 'Saving…' : editingId ? 'Update member' : 'Add member'}
+              {saving
+                ? 'Saving…'
+                : editingId
+                  ? passwordOnly
+                    ? 'Update password'
+                    : 'Update member'
+                  : 'Add member'}
             </button>
             {editingId ? (
               <button type="button" className="btn btn-ghost" onClick={cancelEdit}>
@@ -206,6 +248,13 @@ export default function MembersPage() {
                         onClick={() => startEdit(member)}
                       >
                         Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="jr-table-btn jr-table-btn-accent"
+                        onClick={() => startEdit(member, { focusPassword: true })}
+                      >
+                        Password
                       </button>
                       {!member.isOwner ? (
                         <button

@@ -3903,6 +3903,18 @@ main {
   gap: 0.65rem;
 }
 
+.jr-members-password-wide {
+  grid-column: 1 / -1;
+  max-width: 28rem;
+}
+
+.jr-members-field-hint {
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--muted);
+}
+
 .jr-members-table .jr-td-actions {
   width: 28%;
 }

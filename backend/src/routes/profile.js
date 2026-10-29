@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import db from '../db.js';
-import { requireUser } from '../userAuth.js';
+import { requireUser, sharedProfileUserId } from '../userAuth.js';
 import { EMPTY_PROFILE, syncProfileToFixedAnswers } from '../profileSync.js';
 
 const router = Router();
@@ -33,24 +33,34 @@ function mergeProfile(existing, patch) {
   return next;
 }
 
+function loadSharedProfile(user) {
+  const profileId = sharedProfileUserId(user);
+  return db.getProfile(profileId) || structuredClone(EMPTY_PROFILE);
+}
+
+function saveSharedProfile(user, profile) {
+  const profileId = sharedProfileUserId(user);
+  return db.saveProfile(profileId, profile);
+}
+
 router.get('/', (req, res) => {
   const user = requireUser(req, res);
   if (!user) return;
-  const profile = db.getProfile(user.id) || structuredClone(EMPTY_PROFILE);
-  res.json({ ok: true, profile });
+  const profile = loadSharedProfile(user);
+  res.json({ ok: true, profile, shared: true });
 });
 
 router.put('/', (req, res) => {
   const user = requireUser(req, res);
   if (!user) return;
   try {
-    const existing = db.getProfile(user.id) || structuredClone(EMPTY_PROFILE);
+    const existing = loadSharedProfile(user);
     const next = mergeProfile(existing, req.body || {});
-    const saved = db.saveProfile(user.id, next);
+    const saved = saveSharedProfile(user, next);
     // Sync after every save so autofill can use partial profile (name/email) immediately
     const sync = syncProfileToFixedAnswers(saved);
 
-    res.json({ ok: true, profile: saved, sync });
+    res.json({ ok: true, profile: saved, sync, shared: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -60,7 +70,7 @@ router.post('/complete', (req, res) => {
   const user = requireUser(req, res);
   if (!user) return;
   try {
-    const existing = db.getProfile(user.id) || structuredClone(EMPTY_PROFILE);
+    const existing = loadSharedProfile(user);
     const next = mergeProfile(existing, {
       ...(req.body || {}),
       completedSteps: {
@@ -71,9 +81,9 @@ router.post('/complete', (req, res) => {
       },
       profileComplete: true,
     });
-    const saved = db.saveProfile(user.id, next);
+    const saved = saveSharedProfile(user, next);
     const sync = syncProfileToFixedAnswers(saved);
-    res.json({ ok: true, profile: saved, sync });
+    res.json({ ok: true, profile: saved, sync, shared: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

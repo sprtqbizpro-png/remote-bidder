@@ -6,9 +6,32 @@ async function getApiBase() {
   return (apiBaseUrl || DEFAULT_API).replace(/\/$/, '');
 }
 
+function normalizeBaseUrl(url, fallback) {
+  const value = String(url || '').trim().replace(/\/$/, '');
+  return value || fallback;
+}
+
+/**
+ * Resolve web app URL for profile deep-links.
+ * Prefer an explicit extension setting, otherwise use FRONTEND_URL from the API.
+ */
 async function getWebBase() {
-  const { webBaseUrl } = await chrome.storage.sync.get({ webBaseUrl: DEFAULT_WEB });
-  return (webBaseUrl || DEFAULT_WEB).replace(/\/$/, '');
+  const { webBaseUrl, apiBaseUrl } = await chrome.storage.sync.get({
+    webBaseUrl: '',
+    apiBaseUrl: DEFAULT_API,
+  });
+  const explicit = String(webBaseUrl || '').trim();
+  if (explicit) return normalizeBaseUrl(explicit, DEFAULT_WEB);
+
+  try {
+    const api = normalizeBaseUrl(apiBaseUrl, DEFAULT_API);
+    const res = await fetch(`${api}/api/auth/settings`);
+    const data = await res.json().catch(() => ({}));
+    if (data?.frontendUrl) return normalizeBaseUrl(data.frontendUrl, DEFAULT_WEB);
+  } catch {
+    /* API may be offline — fall back */
+  }
+  return DEFAULT_WEB;
 }
 
 async function getAuthToken() {
@@ -52,14 +75,25 @@ async function handleMessage(message, sender = {}) {
     case 'GET_SETTINGS': {
       const settings = await chrome.storage.sync.get({
         apiBaseUrl: DEFAULT_API,
+        webBaseUrl: '',
         openaiApiKey: '',
         autoFillEnabled: true,
       });
+      if (!settings.webBaseUrl) {
+        settings.webBaseUrl = await getWebBase();
+      }
       return { ok: true, settings };
     }
 
     case 'SAVE_SETTINGS': {
-      await chrome.storage.sync.set(message.settings || {});
+      const next = { ...(message.settings || {}) };
+      if (next.webBaseUrl !== undefined) {
+        next.webBaseUrl = String(next.webBaseUrl || '').trim().replace(/\/$/, '');
+      }
+      if (next.apiBaseUrl !== undefined) {
+        next.apiBaseUrl = String(next.apiBaseUrl || '').trim().replace(/\/$/, '') || DEFAULT_API;
+      }
+      await chrome.storage.sync.set(next);
       return { ok: true };
     }
 

@@ -36,6 +36,22 @@ export function resolveRole(user) {
   return 'member';
 }
 
+/** Owner account used for the shared team profile. */
+export function findOwnerUser() {
+  const byEmail = db.findUserByEmail(getOwnerEmail());
+  if (byEmail) return byEmail;
+  return db.listUsers().find((u) => resolveRole(u) === 'owner') || null;
+}
+
+/**
+ * All members share the owner's application profile.
+ * Falls back to the signed-in user if no owner exists yet.
+ */
+export function sharedProfileUserId(user) {
+  const owner = findOwnerUser();
+  return owner?.id || user?.id || null;
+}
+
 export function publicUser(user) {
   if (!user) return null;
   const role = resolveRole(user);
@@ -188,25 +204,28 @@ export function updateMember(id, { email, password, name }) {
     err.status = 404;
     throw err;
   }
+
+  const nextPassword = password === undefined || password === null ? '' : String(password);
+  if (nextPassword) {
+    if (nextPassword.length < 6) {
+      const err = new Error('Password must be at least 6 characters');
+      err.status = 400;
+      throw err;
+    }
+  }
+
   if (resolveRole(existing) === 'owner') {
     // Owner account: allow name/password update, not email/role demotion via this path.
-    const patch = {};
+    const patch = { role: 'owner' };
     if (name !== undefined) patch.name = String(name || '').trim() || existing.name;
-    if (password) {
-      if (String(password).length < 6) {
-        const err = new Error('Password must be at least 6 characters');
-        err.status = 400;
-        throw err;
-      }
-      patch.passwordHash = hashPassword(password);
-    }
-    const updated = db.updateUser(id, { ...patch, role: 'owner' });
+    if (nextPassword) patch.passwordHash = hashPassword(nextPassword);
+    const updated = db.updateUser(id, patch);
     return publicUser(updated);
   }
 
   const input = validateMemberInput({
     email: email !== undefined ? email : existing.email,
-    password,
+    password: nextPassword,
     name: name !== undefined ? name : existing.name,
     requirePassword: false,
   });
@@ -226,7 +245,7 @@ export function updateMember(id, { email, password, name }) {
     name: input.name,
     role: 'member',
   };
-  if (input.password) patch.passwordHash = hashPassword(input.password);
+  if (nextPassword) patch.passwordHash = hashPassword(nextPassword);
   const updated = db.updateUser(id, patch);
   return publicUser(updated);
 }

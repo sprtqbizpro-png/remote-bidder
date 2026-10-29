@@ -312,7 +312,7 @@ export default function ProfilePage() {
           <span className="jr-privacy-face" aria-hidden="true">
             🙂
           </span>
-          <span>Your profile data is kept private and secure.</span>
+          <span>Shared team profile — used by all members for autofill.</span>
         </div>
         <div className="jr-profile-user-bar">
           <span>{user.email}</span>

@@ -1,5 +1,6 @@
 const apiStatus = document.getElementById('api-status');
 const apiBaseUrl = document.getElementById('apiBaseUrl');
+const webBaseUrl = document.getElementById('webBaseUrl');
 const openaiApiKey = document.getElementById('openaiApiKey');
 const saveMsg = document.getElementById('save-msg');
 const webLink = document.getElementById('web-link');
@@ -9,12 +10,27 @@ function showMsg(text, isError = false) {
   saveMsg.classList.toggle('is-error', !!isError);
 }
 
+function applyWebLink(url) {
+  const href = String(url || '').trim() || 'http://localhost:5280';
+  webLink.href = href.replace(/\/$/, '');
+}
+
 async function loadSettings() {
   const res = await chrome.runtime.sendMessage({ type: 'GET_SETTINGS' });
   if (res?.ok) {
     apiBaseUrl.value = res.settings.apiBaseUrl || 'http://localhost:3847';
+    webBaseUrl.value = res.settings.webBaseUrl || '';
     openaiApiKey.value = res.settings.openaiApiKey || '';
-    webLink.href = 'http://localhost:5280';
+    applyWebLink(webBaseUrl.value);
+  }
+  try {
+    const web = await chrome.runtime.sendMessage({ type: 'GET_WEB_BASE' });
+    if (web?.ok && web.webBaseUrl) {
+      if (!webBaseUrl.value) webBaseUrl.value = web.webBaseUrl;
+      applyWebLink(web.webBaseUrl);
+    }
+  } catch {
+    /* ignore */
   }
 }
 
@@ -39,9 +55,11 @@ document.getElementById('btn-save').addEventListener('click', async () => {
     type: 'SAVE_SETTINGS',
     settings: {
       apiBaseUrl: apiBaseUrl.value.trim() || 'http://localhost:3847',
+      webBaseUrl: webBaseUrl.value.trim(),
       openaiApiKey: openaiApiKey.value.trim(),
     },
   });
+  applyWebLink(webBaseUrl.value.trim());
   showMsg('Settings saved.');
   await checkHealth();
 });

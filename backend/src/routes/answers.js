@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import db from '../db.js';
 import { generateAnswer } from '../openai.js';
 import { getStoredOpenAIKey } from './auth.js';
-import { getBearerToken, userFromToken } from '../userAuth.js';
+import { getBearerToken, userFromToken, sharedProfileUserId } from '../userAuth.js';
 import { profileToAnswerPairs } from '../profileSync.js';
 import {
   isRepetitiveQA,
@@ -180,7 +180,7 @@ router.post('/generate', async (req, res) => {
     let profilePairs = [];
     const user = userFromToken(getBearerToken(req));
     if (user) {
-      const profile = db.getProfile(user.id);
+      const profile = db.getProfile(sharedProfileUserId(user));
       if (profile) {
         profilePairs = profileToAnswerPairs(profile).map((p) => ({
           question_pattern: p.questionPattern,

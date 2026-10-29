@@ -10,6 +10,7 @@ import {
   logout,
   getBearerToken,
   userFromToken,
+  sharedProfileUserId,
 } from '../userAuth.js';
 import { EMPTY_PROFILE } from '../profileSync.js';
 
@@ -46,7 +47,9 @@ router.get('/me', (req, res) => {
   const token = getBearerToken(req);
   const user = userFromToken(token);
   if (!user) return res.status(401).json({ error: 'Sign in required' });
-  const profile = db.getProfile(user.id) || structuredClone(EMPTY_PROFILE);
+  // Members share the owner's profile for apply readiness.
+  const profileId = sharedProfileUserId(user);
+  const profile = db.getProfile(profileId) || structuredClone(EMPTY_PROFILE);
   res.json({
     ok: true,
     user,
@@ -88,9 +91,15 @@ router.post('/google/disconnect', (_req, res) => {
 
 router.get('/settings', (_req, res) => {
   const settings = db.getAllSettings();
+  const frontendUrl = String(
+    process.env.FRONTEND_URL || settings.frontend_url || 'http://localhost:5280'
+  )
+    .trim()
+    .replace(/\/$/, '');
   res.json({
     openaiConfigured: !!(settings.openai_api_key || process.env.OPENAI_API_KEY),
     apiBaseUrl: settings.api_base_url || null,
+    frontendUrl,
   });
 });
 
