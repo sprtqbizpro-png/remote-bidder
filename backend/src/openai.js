@@ -3,7 +3,7 @@ import { structureJobDescription } from './cleanDescription.js';
 
 let client = null;
 
-function getClient(apiKey) {
+export function getClient(apiKey) {
   const key = apiKey || process.env.OPENAI_API_KEY;
   if (!key) throw new Error('OpenAI API key not configured');
   if (!client || client._key !== key) {
@@ -26,8 +26,10 @@ export async function generateAnswer({
   resumeContext = '',
   apiKey,
   style = 'essay',
+  options = [],
 }) {
   const openai = getClient(apiKey);
+  const choices = Array.isArray(options) ? options.filter(Boolean).slice(0, 60) : [];
 
   const fixedBlock =
     fixedAnswers.length > 0
@@ -49,7 +51,7 @@ export async function generateAnswer({
 Company: ${companyName || 'Unknown'}
 Role: ${roleName || 'Unknown'}
 Question: ${question}
-
+${choices.length ? `Allowed options (reply with exactly one of these, copied verbatim): ${choices.map((c) => `"${c}"`).join(', ')}\n` : ''}
 Job description (excerpt):
 ${(jobDescription || '').slice(0, 2500)}
 
@@ -107,6 +109,8 @@ export async function extractJobFromPage({
         content: `You extract job posting fields from webpage text.
 Return ONLY valid JSON with keys:
 companyName (string), roleName (string), jobDescription (string), location (string|null), confidence (number 0-1).
+
+companyName is the employer that is hiring for this role. The page may be a job board or aggregator (e.g. HiringCafe, Jobright, LinkedIn, Indeed, Glassdoor, We Work Remotely, Remotive): never return the board's own name, and ignore companies from "similar jobs" or recommendation lists.
 
 The page text is already lightly formatted: "## " marks headings, "- " or "1. " marks list items, a blank line separates paragraphs, and a single newline is a line break.
 

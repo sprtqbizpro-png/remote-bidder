@@ -2195,8 +2195,11 @@
           // Low confidence is often just a missing company/role. A solid DOM-extracted description
           // keeps the page's exact wording and layout, so prefer it over the model's copy.
           const keepLocalDesc = !forceLlm && (local.descriptionScore || 0) >= 250;
+          // A company confirmed in the visible job header beats the model (which can pick the board's brand)
+          const keepLocalCompany = !!local.companyName && (local.companyScore || 0) >= 60;
           finalInfo = {
             ...ai,
+            companyName: keepLocalCompany ? local.companyName : ai.companyName || local.companyName,
             jobDescription: keepLocalDesc ? local.jobDescription : ai.jobDescription || local.jobDescription,
             resumeDriveLink: lastResumeLink,
             resumeDriveFileId: lastResumeFileId,
@@ -2879,63 +2882,102 @@
           'busy'
         );
         updateProgressBusyLabel('Autofilling remaining fields', { waiting: false });
-        const res = await send('GENERATE_ANSWERS', {
-          questions: collected.map(({ id, question, tag, type, placeholder, options }) => ({
-            id,
-            question,
-            tag,
-            type,
-            placeholder,
-            options,
-          })),
-          companyName: info.companyName,
-          roleName: info.roleName,
-          jobDescription: info.jobDescription,
-          resumeContext,
-        });
+        const generateFor = (qs) =>
+          send('GENERATE_ANSWERS', {
+            questions: qs.map(({ id, question, tag, type, placeholder, options }) => ({
+              id,
+              question,
+              tag,
+              type,
+              placeholder,
+              options: HS.serializableOptions ? HS.serializableOptions(options) : options,
+            })),
+            companyName: info.companyName,
+            roleName: info.roleName,
+            jobDescription: info.jobDescription,
+            resumeContext,
+          });
+        // Never fill cover letters — leave those for the user
+        const fillableAnswers = (list) =>
+          list.filter((a) => {
+            if (!a.answer) return false;
+            if (HS.isCoverLetterField?.(a.question, { placeholder: a.placeholder })) return false;
+            if (/cover\s*letter/i.test(a.question || '')) return false;
+            return true;
+          });
+
+        const res = await generateFor(collected);
         if (autofillCancelled) throw new Error('cancelled');
         if (!res?.ok) throw new Error(res?.error || 'Failed');
 
         allAnswers = res.data.answers || [];
-        // Never fill cover letters — leave those for the user
-        const answers = allAnswers.filter((a) => {
-          if (!a.answer) return false;
-          if (HS.isCoverLetterField?.(a.question, { placeholder: a.placeholder })) return false;
-          if (/cover\s*letter/i.test(a.question || '')) return false;
-          return true;
-        });
-        const result = await HS.fillAnswers(answers, {
-          onItem: (item) => {
-            if (autofillCancelled) return;
-            const qk = String(item.question || '')
-              .toLowerCase()
-              .replace(/[^a-z0-9]+/g, ' ')
-              .trim();
-            const idx = progressItems.findIndex(
-              (p) =>
-                p.id === item.id ||
-                String(p.question || '')
-                  .toLowerCase()
-                  .replace(/[^a-z0-9]+/g, ' ')
-                  .trim() === qk
-            );
-            if (idx >= 0) progressItems[idx] = { ...progressItems[idx], ...item };
-            else progressItems.push(item);
-            progressItems = dedupeProgress(progressItems);
-            renderAutofillProgress(progressItems, {
-              busy: true,
-              expanded: true,
-              busyLabel: 'Autofilling remaining fields',
-              waiting: false,
-            });
-          },
-        });
+        const answers = fillableAnswers(allAnswers);
+        const onFillItem = (item) => {
+          if (autofillCancelled) return;
+          const qk = String(item.question || '')
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, ' ')
+            .trim();
+          const idx = progressItems.findIndex(
+            (p) =>
+              p.id === item.id ||
+              String(p.question || '')
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, ' ')
+                .trim() === qk
+          );
+          if (idx >= 0) progressItems[idx] = { ...progressItems[idx], ...item };
+          else progressItems.push(item);
+          progressItems = dedupeProgress(progressItems);
+          renderAutofillProgress(progressItems, {
+            busy: true,
+            expanded: true,
+            busyLabel: 'Autofilling remaining fields',
+            waiting: false,
+          });
+        };
+        const result = await HS.fillAnswers(answers, { onItem: onFillItem });
         if (autofillCancelled) throw new Error('cancelled');
         filled = typeof result === 'number' ? result : result.filled || 0;
         if (result?.items) {
           progressItems = dedupeProgress(
             result.items.concat(progressItems.filter((p) => p.id === '__resume__'))
           );
+        }
+
+        // Follow-up questions ("If yes, which visa?", "Please explain…") only appear after earlier
+        // answers are set. Re-scan and answer anything new until the form stops growing.
+        const askedKeys = new Set(collected.map((q) => progressQuestionKey(q.question)));
+        for (let pass = 0; pass < 3 && !autofillCancelled; pass++) {
+          await new Promise((r) => setTimeout(r, 700));
+          const fresh = HS.collectQuestions().filter((q) => {
+            const k = progressQuestionKey(q.question);
+            return k && !askedKeys.has(k);
+          });
+          if (!fresh.length) break;
+          fresh.forEach((q) => askedKeys.add(progressQuestionKey(q.question)));
+          collected = collected.concat(fresh);
+          setStatus(`Found ${fresh.length} follow-up question(s) — filling…`, false, 'busy');
+          const more = await generateFor(fresh);
+          if (autofillCancelled) throw new Error('cancelled');
+          if (!more?.ok) break;
+          const moreAnswers = more.data.answers || [];
+          allAnswers = allAnswers.concat(moreAnswers);
+          fresh.forEach((q) => {
+            if (!progressItems.some((p) => p.id === q.id)) {
+              progressItems.push({ id: q.id, question: q.question, filled: false, required: HS.isRequiredQuestion?.(q) });
+            }
+          });
+          const freshIds = new Set(fresh.map((q) => q.id));
+          const freshKeys = new Set(fresh.map((q) => progressQuestionKey(q.question)));
+          await HS.fillAnswers(fillableAnswers(moreAnswers), {
+            // Only report the new questions; earlier rows keep their state
+            onItem: (item) => {
+              if (!freshIds.has(item.id) && !freshKeys.has(progressQuestionKey(item.question))) return;
+              if (item.filled) filled += 1;
+              onFillItem(item);
+            },
+          });
         }
         // Attach source only when fill succeeded — don't show profile/saved on empty controls
         const byId = new Map(allAnswers.map((a) => [a.id, a]));

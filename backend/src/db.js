@@ -234,6 +234,16 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+const MAX_ALIASES = 25;
+
+function mergeAliases(existing, added) {
+  const out = Array.isArray(existing) ? existing.filter(Boolean) : [];
+  for (const a of added || []) {
+    if (a && !out.includes(a)) out.push(a);
+  }
+  return out.slice(-MAX_ALIASES);
+}
+
 /**
  * Merge durable store with in-memory mutations so jobs/sessions created
  * on this instance are not lost when reloading another instance's blob.
@@ -361,7 +371,7 @@ export const db = {
     return data.fixed_answers;
   },
 
-  upsertFixedAnswer({ id, question_key, question_pattern, answer, intent = null }) {
+  upsertFixedAnswer({ id, question_key, question_pattern, answer, intent = null, aliases = [] }) {
     const data = read();
     const intentKey = intent ? `intent_${intent}` : null;
     const sameIntent = (a) => {
@@ -380,6 +390,8 @@ export const db = {
       question_pattern,
       answer,
       intent: intent || prev?.intent || null,
+      // Exact live phrasings seen for this answer (normalized) — reused without an LLM call
+      aliases: mergeAliases(prev?.aliases, aliases),
       updated_at: nowIso(),
     };
 
@@ -392,6 +404,21 @@ export const db = {
     data.fixed_answers.push(row);
     write(data);
     return { row, created: !prev };
+  },
+
+  /** Update an existing fixed answer's value and/or record another phrasing for it. */
+  updateFixedAnswer(id, { answer, alias } = {}) {
+    const data = read();
+    const row = data.fixed_answers.find((a) => a.id === id);
+    if (!row) return null;
+    const aliases = mergeAliases(row.aliases, alias ? [alias] : []);
+    const nextAnswer = answer != null ? String(answer) : row.answer;
+    if (nextAnswer === row.answer && aliases.length === (row.aliases || []).length) return row;
+    row.answer = nextAnswer;
+    row.aliases = aliases;
+    row.updated_at = nowIso();
+    write(data);
+    return row;
   },
 
   getFixedByKey(key) {

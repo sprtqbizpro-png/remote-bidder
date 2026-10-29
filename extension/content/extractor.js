@@ -52,24 +52,109 @@
       .join(' ');
   }
 
-  /** e.g. cognizant.taleo.net → Cognizant */
+  // ─── Job boards / aggregators ──────────────────────────────
+  /**
+   * Sites that list other companies' jobs. Their own brand (host, logo, og:site_name)
+   * must never be taken as the hiring company.
+   */
+  const JOB_BOARDS = [
+    [/(^|\.)hiring\.cafe$/, ['HiringCafe', 'Hiring Cafe']],
+    [/(^|\.)jobright\.ai$/, ['Jobright', 'Jobright.ai', 'JobRight AI']],
+    [/(^|\.)linkedin\.com$/, ['LinkedIn']],
+    [/(^|\.)indeed\./, ['Indeed']],
+    [/(^|\.)glassdoor\./, ['Glassdoor']],
+    [/(^|\.)ziprecruiter\./, ['ZipRecruiter']],
+    [/(^|\.)(wellfound\.com|angel\.co)$/, ['Wellfound', 'AngelList']],
+    [/(^|\.)weworkremotely\.com$/, ['We Work Remotely']],
+    [/(^|\.)remoteok\.(com|io)$/, ['Remote OK', 'RemoteOK']],
+    [/(^|\.)remotive\.(com|io)$/, ['Remotive']],
+    [/(^|\.)himalayas\.app$/, ['Himalayas']],
+    [/(^|\.)workingnomads\.com$/, ['Working Nomads']],
+    [/(^|\.)flexjobs\.com$/, ['FlexJobs']],
+    [/(^|\.)dice\.com$/, ['Dice']],
+    [/(^|\.)builtin\.com$/, ['Built In']],
+    [/(^|\.)simplyhired\./, ['SimplyHired']],
+    [/(^|\.)monster\./, ['Monster']],
+    [/(^|\.)(otta\.com|welcometothejungle\.com)$/, ['Otta', 'Welcome to the Jungle']],
+    [/(^|\.)jobgether\.com$/, ['Jobgether']],
+    [/(^|\.)remote\.co$/, ['Remote.co']],
+    [/(^|\.)jobicy\.com$/, ['Jobicy']],
+  ];
+  /** ATS platforms: company is in the subdomain or first path segment, never the platform name. */
+  const ATS_HOST_RE =
+    /(greenhouse\.io|lever\.co|ashbyhq\.com|myworkdayjobs\.com|smartrecruiters\.com|workable\.com|bamboohr\.com|jobvite\.com|icims\.com|taleo\.net|breezy\.hr|recruitee\.com|teamtailor\.com|rippling\.com|applytojob\.com|personio\.(de|com))$/i;
+
+  function normName(s) {
+    return String(s || '')
+      .toLowerCase()
+      .replace(/&amp;/g, '&')
+      .replace(/[^a-z0-9&]+/g, ' ')
+      .trim();
+  }
+
+  /** Whole-word containment on normalized text. */
+  function containsName(haystackNorm, nameNorm) {
+    return !!nameNorm && ` ${haystackNorm} `.includes(` ${nameNorm} `);
+  }
+
+  let boardCache = null;
+  function boardInfo() {
+    if (boardCache && boardCache.href === location.href) return boardCache;
+    const host = location.hostname.replace(/^www\./, '').toLowerCase();
+    const known = JOB_BOARDS.find(([re]) => re.test(host));
+    const isBoard = !!known || ATS_HOST_RE.test(host);
+    const brands = known ? [...known[1]] : [];
+    if (known) {
+      brands.push(host.split('.')[0], host);
+      const site = metaContent('og:site_name');
+      if (site) brands.push(site);
+    }
+    boardCache = {
+      href: location.href,
+      isBoard,
+      brands: brands.map((b) => normName(b).replace(/\s+/g, '')).filter((b) => b.length >= 3),
+    };
+    return boardCache;
+  }
+
+  /** True when the name is the job board's own brand (e.g. "Hiring", "HiringCafe", "Jobright.ai"). */
+  function isBoardBrand(name) {
+    const n = normName(name).replace(/\s+/g, '');
+    if (!n) return false;
+    return boardInfo().brands.some(
+      (b) => n === b || (n.startsWith(b) && n.length - b.length <= 3) || (b.startsWith(n) && n.length >= 4)
+    );
+  }
+
+  /** Company from an ATS subdomain/path or a company's own careers domain. Never from a job board. */
   function companyFromHost() {
     const host = location.hostname.replace(/^www\./, '').toLowerCase();
-    const taleo = host.match(/^([a-z0-9-]+)\.taleo\.net$/i);
-    if (taleo) return titleCaseBrand(taleo[1]);
-    const myworkday = host.match(/^([a-z0-9-]+)\.wd\d+\.myworkdayjobs\.com$/i);
-    if (myworkday) return titleCaseBrand(myworkday[1]);
-    if (/greenhouse|lever\.co|ashbyhq|linkedin|indeed|myworkdayjobs|taleo\.net/i.test(host)) {
-      return '';
+    const seg = location.pathname.split('/').filter(Boolean)[0] || '';
+    const sub = host.match(
+      /^(?:careers-)?([a-z0-9-]+)\.(?:taleo\.net|wd\d+\.myworkdayjobs\.com|bamboohr\.com|breezy\.hr|recruitee\.com|teamtailor\.com|applytojob\.com|icims\.com|jobs\.personio\.(?:de|com))$/i
+    );
+    if (sub && !/^(jobs|careers|www|app|apply)$/i.test(sub[1])) return titleCaseBrand(sub[1]);
+    if (
+      /^(boards|job-boards)\.greenhouse\.io$|^jobs\.(lever\.co|ashbyhq\.com|smartrecruiters\.com)$|^apply\.workable\.com$/i.test(host) &&
+      /^[a-z0-9][\w-]*$/i.test(seg) &&
+      !/^(embed|jobs?|j)$/i.test(seg)
+    ) {
+      return titleCaseBrand(seg);
     }
-    const base = host.split('.')[0];
-    if (base && base.length > 1 && !/^(jobs|careers|www|app|board)$/i.test(base)) {
+    if (boardInfo().isBoard) return '';
+    // Company careers site: careers.acme.com / acme.com/careers / jobs.acme.co.uk
+    const labels = host.split('.');
+    let i = labels.length - 2;
+    if (i > 0 && /^(co|com|org|net|ac|gov)$/.test(labels[i]) && labels[labels.length - 1].length === 2) i -= 1;
+    const base = labels[Math.max(0, i)];
+    if (base && base.length > 1 && !/^(jobs|careers|www|app|board|apply)$/i.test(base)) {
       return titleCaseBrand(base);
     }
     return '';
   }
 
   function companyFromLogo() {
+    if (boardInfo().isBoard) return ''; // the first logo on a board is the board's own
     const imgs = document.querySelectorAll(
       'img[alt], img[title], a.logo img, .logo img, header img, #header img'
     );
@@ -83,6 +168,277 @@
     return '';
   }
 
+  function isVisibleEl(el) {
+    if (!el) return false;
+    return el.checkVisibility ? el.checkVisibility() : el.getClientRects().length > 0;
+  }
+
+  /**
+   * Boards like HiringCafe / Jobright open the job in a modal or side panel over a list.
+   * When such a panel is open, it is the job; everything else is the list behind it.
+   */
+  function jobScope() {
+    const panels = document.querySelectorAll('[role="dialog"], dialog[open], [aria-modal="true"]');
+    for (const p of Array.from(panels).reverse()) {
+      if (isVisibleEl(p) && (p.innerText || '').length > 300) return p;
+    }
+    return document;
+  }
+
+  // ─── Embedded app state (Next.js / JSON) ───────────────────
+  const JOB_TITLE_KEYS = ['title', 'jobTitle', 'job_title', 'positionTitle', 'roleName'];
+  const JOB_DESC_KEYS = [
+    'description', 'jobDescription', 'job_description', 'descriptionHtml', 'description_html',
+    'jobDescriptionHtml', 'job_description_html',
+  ];
+  const COMPANY_NAME_KEYS = [
+    'companyName', 'company_name', 'employerName', 'employer_name', 'hiringOrganizationName',
+    'organizationName', 'orgName',
+  ];
+  const COMPANY_OBJ_KEYS = [
+    'company', 'employer', 'hiringOrganization', 'organization', 'companyResult', 'companyInfo',
+    'enriched_company_data',
+  ];
+
+  function companyIn(obj) {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return '';
+    for (const k of COMPANY_NAME_KEYS) {
+      if (typeof obj[k] === 'string' && obj[k].trim()) return obj[k].trim();
+    }
+    for (const k of COMPANY_OBJ_KEYS) {
+      const v = obj[k];
+      if (typeof v === 'string' && v.trim() && v.length < 100) return v.trim();
+      if (v && typeof v === 'object') {
+        const n = v.name || v.companyName || v.company_name || v.legalName;
+        if (typeof n === 'string' && n.trim()) return n.trim();
+      }
+    }
+    return '';
+  }
+
+  /**
+   * Job objects ({title, description, company?}) found in embedded page state.
+   * Company may live in a sibling object (e.g. {job_information: {...}, v5_processed_job_data: {company_name}}).
+   * On SPAs this state can belong to a previously viewed job — callers must validate against the visible title.
+   */
+  function findEmbeddedJobs() {
+    const roots = [];
+    document.querySelectorAll('script#__NEXT_DATA__, script[type="application/json"]').forEach((s) => {
+      const t = s.textContent || '';
+      if (t.length < 100 || t.length > 8e6) return;
+      try {
+        roots.push(JSON.parse(t));
+      } catch {
+        /* ignore */
+      }
+    });
+    const jobs = [];
+    let budget = 200000;
+    function visit(node, parent, depth) {
+      if (!node || typeof node !== 'object' || depth > 14 || --budget < 0) return;
+      if (Array.isArray(node)) {
+        node.forEach((c) => visit(c, parent, depth + 1));
+        return;
+      }
+      const title = JOB_TITLE_KEYS.map((k) => node[k]).find(
+        (v) => typeof v === 'string' && v.trim().length >= 3 && v.length < 200
+      );
+      const description = JOB_DESC_KEYS.map((k) => node[k]).find((v) => typeof v === 'string' && v.length >= 200);
+      if (title && description) {
+        let company = companyIn(node);
+        if (!company && parent) {
+          company = companyIn(parent);
+          for (const v of Object.values(parent)) {
+            if (company) break;
+            if (v !== node) company = companyIn(v);
+          }
+        }
+        jobs.push({ title: title.trim(), description, company });
+      }
+      Object.values(node).forEach((v) => visit(v, node, depth + 1));
+    }
+    roots.forEach((r) => visit(r, null, 0));
+    return jobs;
+  }
+
+  /** Company-name string values anywhere in inline scripts (covers RSC / escaped JSON payloads). */
+  function companyNamesInScripts() {
+    const counts = new Map();
+    const re =
+      /\\?"(?:companyName|company_name|employerName|employer_name|hiringOrganizationName)\\?"\s*:\s*\\?"([^"\\]{2,80})\\?"/g;
+    let total = 0;
+    for (const s of document.querySelectorAll('script:not([src])')) {
+      const t = s.textContent || '';
+      total += t.length;
+      if (total > 6e6) break;
+      for (const m of t.matchAll(re)) counts.set(m[1], (counts.get(m[1]) || 0) + 1);
+    }
+    return counts;
+  }
+
+  // ─── Company resolution ────────────────────────────────────
+  const COMPANY_NOISE =
+    /[$€£]|\b\d+\s*(k|applicants?|employees|days?|hours?|weeks?|months?)\b|\bago\b|\b(posted|apply|save|share|match|salary|remote|hybrid|on-?site|full[- ]?time|part[- ]?time|contract|internship|united states|usa|h-?1b|sponsor|view (all )?jobs|similar|recommended)\b/i;
+
+  function cleanCompanyName(raw) {
+    let s = String(raw || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^(company|employer|hiring company|posted by)\s*[:-]\s*/i, '')
+      .replace(/\s*('s)?\s*logo$/i, '')
+      .replace(/\s+[|·•]\s+.*$/, '')
+      .replace(/\s+\d(\.\d)?\s*★.*$/, '')
+      .trim();
+    if (s.length < 2 || s.length > 80 || s.split(' ').length > 8) return '';
+    if (isBadRoleTitle(s) || COMPANY_NOISE.test(s)) return '';
+    return s;
+  }
+
+  function titleMatches(a, b) {
+    const na = normName(a);
+    const nb = normName(b);
+    return !!na && !!nb && (na === nb || na.includes(nb) || nb.includes(na));
+  }
+
+  /** Visible element showing the job title (inside the open job panel when there is one). */
+  function findTitleElement(role) {
+    const target = normName(role);
+    if (!target) return null;
+    const scope = jobScope();
+    const els = scope.querySelectorAll('h1, h2, h3, h4, [class*="title" i], [data-testid*="title" i]');
+    for (const el of els) {
+      const t = normName(textOf(el));
+      if ((t === target || (t.includes(target) && t.length < target.length + 40)) && isVisibleEl(el)) return el;
+    }
+    return null;
+  }
+
+  /** The block around the title that holds company / location / salary — but not the whole page. */
+  function headerRegion(titleEl) {
+    let el = titleEl;
+    for (let i = 0; i < 5 && el.parentElement; i++) {
+      if ((el.parentElement.innerText || '').length > 1200) break;
+      el = el.parentElement;
+    }
+    return el;
+  }
+
+  /**
+   * Gather company candidates from every source, then score them. The decisive signal is
+   * appearing in the visible header next to the job title — this is what keeps board brands,
+   * "similar jobs" companies and stale SPA state out.
+   */
+  function resolveCompany({ roleName, jsonLd, atsResult, embeddedJob, domCompany }) {
+    const cands = new Map();
+    const add = (raw, prior, src) => {
+      const name = cleanCompanyName(raw);
+      if (!name || isBoardBrand(name) || titleMatches(name, roleName)) return;
+      const key = normName(name);
+      const c = cands.get(key) || { name, prior: 0, sources: new Set() };
+      c.prior = Math.max(c.prior, prior);
+      c.sources.add(src);
+      cands.set(key, c);
+    };
+
+    if (jsonLd?.companyName) add(jsonLd.companyName, 55, 'json-ld');
+    if (embeddedJob?.company) add(embeddedJob.company, 50, 'embedded');
+    if (atsResult?.companyName) add(atsResult.companyName, 35, 'ats');
+    if (domCompany) add(domCompany, 30, 'dom');
+
+    const titleEl = findTitleElement(roleName);
+    const region = titleEl ? headerRegion(titleEl) : null;
+    if (titleEl && region) {
+      const inTitle = (el) => titleEl.contains(el) || el.contains(titleEl);
+      region.querySelectorAll('a[href]').forEach((a) => {
+        const href = a.getAttribute('href') || '';
+        if (!inTitle(a) && /\/(company|companies|employers?|organizations?|brands?)\//i.test(href)) {
+          add(textOf(a) || a.getAttribute('aria-label') || a.title, 45, 'near:link');
+        }
+      });
+      region
+        .querySelectorAll('[class*="company" i], [class*="employer" i], [data-testid*="company" i], [itemprop="hiringOrganization"]')
+        .forEach((el) => {
+          if (!inTitle(el) && el.childElementCount <= 3) add(textOf(el), 40, 'near:class');
+        });
+      region.querySelectorAll('img[alt]').forEach((img) => add(img.getAttribute('alt'), 30, 'near:logo'));
+      for (const sib of [
+        titleEl.previousElementSibling,
+        titleEl.nextElementSibling,
+        titleEl.parentElement?.previousElementSibling,
+        titleEl.parentElement?.nextElementSibling,
+      ]) {
+        if (sib && !inTitle(sib)) {
+          const t = textOf(sib);
+          if (t.length <= 60) add(t, 25, 'near:sibling');
+        }
+      }
+    }
+
+    for (const t of [document.title, metaContent('og:title')]) {
+      if (!t) continue;
+      const at = t.match(/\s(?:at|@)\s+(.+?)(?:\s+[|\-–—·]\s+|$)/i);
+      if (at) add(at[1], 30, 'title');
+      const hiring = t.match(/^(.+?)\s+(?:is\s+)?hiring\b/i);
+      if (hiring) add(hiring[1], 28, 'title');
+      const parts = t.split(/\s+[|\-–—·]\s+/).map((p) => p.trim()).filter(Boolean);
+      const rest = parts.filter((p) => !titleMatches(p, roleName) && !isBoardBrand(p));
+      if (parts.length >= 2 && rest.length === 1) add(rest[0], 22, 'title');
+    }
+
+    const hostCompany = companyFromHost();
+    if (hostCompany) add(hostCompany, ATS_HOST_RE.test(location.hostname) ? 20 : 15, 'host');
+    const logo = companyFromLogo();
+    if (logo) add(logo, 10, 'logo');
+    if (!boardInfo().isBoard) add(metaContent('og:site_name'), 20, 'site');
+    companyNamesInScripts().forEach((_n, name) => add(name, 15, 'script'));
+
+    const visible = normName(document.body?.innerText || '');
+    const regionText = normName(region?.innerText || '');
+    let best = { name: '', score: 0 };
+    cands.forEach((c, key) => {
+      const inHeader = containsName(regionText, key);
+      const onPage = containsName(visible, key);
+      // Script-only names (often from other listings) only count when actually shown on the page
+      if (c.sources.size === 1 && c.sources.has('script') && !onPage) return;
+      const score = c.prior + 8 * (c.sources.size - 1) + (inHeader ? 30 : 0) + (onPage ? 10 : 0);
+      if (score > best.score) best = { name: c.name, score };
+    });
+    return best.score >= 25 ? best : { name: '', score: best.score };
+  }
+
+  /**
+   * Prefer what the reader sees (visible DOM, laid out as on the page). Fall back to the posting's
+   * own HTML from structured data when the DOM pick is weak, swallowed surrounding page content,
+   * or is truncated behind "show more".
+   */
+  /**
+   * When the description container also wraps the job header, drop the title line plus the short
+   * meta lines around it (company · location · salary · "2 hours ago") — they are not the posting body.
+   */
+  function stripHeaderPreamble(text, role) {
+    const target = normName(role);
+    if (!text || !target) return text;
+    const lines = text.split('\n');
+    const idx = lines.slice(0, 12).findIndex((l) => normName(l.replace(/^#+\s*/, '')) === target);
+    if (idx < 0) return text;
+    const isMeta = (l) =>
+      !l.trim() || (l.length < 80 && !/^(#|- |\d+\.\s)/.test(l) && !/[.!?:]$/.test(l.trim()));
+    if (!lines.slice(0, idx).every(isMeta)) return text;
+    let end = idx + 1;
+    while (end < lines.length && isMeta(lines[end])) end++;
+    const rest = lines.slice(end).join('\n').trim();
+    return rest.length >= 80 ? rest : text;
+  }
+
+  function pickDescription(dom, structured) {
+    if (!structured || structured.length < 200) return dom || structured || '';
+    if (!dom) return structured;
+    if (scoreDescription(dom) < 120) return structured;
+    if (dom.length > structured.length * 1.8) return structured;
+    if (structured.length > dom.length * 1.3) return structured;
+    return dom;
+  }
+
   /** UI chrome that must never end up inside a description (subset of NOISE_LINE: no job-meta chips). */
   const UI_NOISE_LINE =
     /^(back to jobs?|back|apply( now)?|apply for this job|easy apply|save( job)?|share( this job)?|new|featured|report( this)?( job)?|show more|show less|see more|read more|cookie|accept all|sign in|log in|follow|employees? on linkedin)$/i;
@@ -91,13 +447,12 @@
   const SKIP_TAGS = new Set([
     'script', 'style', 'noscript', 'template', 'svg', 'img', 'picture', 'video', 'audio', 'canvas',
     'iframe', 'object', 'nav', 'header', 'footer', 'button', 'input', 'select', 'textarea', 'label',
-    'dialog',
   ]);
-  const SKIP_ROLES = /^(button|navigation|banner|contentinfo|dialog|alertdialog|tooltip|menu|menubar|search)$/i;
+  const SKIP_ROLES = /^(button|navigation|banner|contentinfo|alertdialog|tooltip|menu|menubar|search)$/i;
   const HIDDEN_CLASS_RE = /(^|\s)(sr-only|visually-hidden|visuallyhidden|screen-reader-text|screenreader|a11y-hidden|assistive-text)(\s|$)/i;
   const NOISE_CLASS_TOKENS = new Set([
     'cookie', 'cookies', 'breadcrumb', 'breadcrumbs', 'share', 'social', 'related', 'similar',
-    'recommended', 'recommendations', 'tooltip', 'modal', 'toast',
+    'recommended', 'recommendations', 'tooltip', 'toast',
   ]);
   /** Used when there is no layout (DOMParser documents, e.g. JSON-LD HTML). */
   const BLOCK_TAGS = new Set([
@@ -469,26 +824,29 @@
       'h1',
       'h2',
     ];
-    for (const sel of selectors) {
-      try {
-        for (const el of document.querySelectorAll(sel)) {
-          const t = textOf(el);
-          if (!isBadRoleTitle(t) && t.length >= 5 && t.length < 220) return t;
+    const scope = jobScope();
+    const roots = scope === document ? [document] : [scope, document];
+    for (const root of roots) {
+      for (const sel of selectors) {
+        try {
+          for (const el of root.querySelectorAll(sel)) {
+            const t = textOf(el);
+            if (!isBadRoleTitle(t) && !isBoardBrand(t) && t.length >= 5 && t.length < 220) return t;
+          }
+        } catch {
+          /* ignore */
         }
-      } catch {
-        /* ignore */
       }
     }
-    const og = metaContent('og:title');
-    if (og && !isBadRoleTitle(og.split(/[|\-–—]/)[0].trim())) {
-      return og.split(/[|\-–—]/)[0].trim();
+    for (const raw of [metaContent('og:title'), document.title]) {
+      const first = String(raw || '').split(/\s+[|\-–—]\s+|\s+(?:at|@)\s+/)[0].trim();
+      if (first && !isBadRoleTitle(first) && !isBoardBrand(first)) return first;
     }
-    const docTitle = document.title.split(/[|\-–—]/)[0].trim();
-    if (!isBadRoleTitle(docTitle)) return docTitle;
     return '';
   }
 
-  function extractCompanyGeneric() {
+  /** Company from well-known job-page selectors only (no logo / host / title guessing). */
+  function companyFromSelectors() {
     const fromDom = firstMatch([
       '[data-testid="company-name"]',
       '.jobsearch-InlineCompanyRating a',
@@ -512,6 +870,12 @@
       const v = companyAttr.getAttribute('data-company-name');
       if (v && !isBadRoleTitle(v)) return v;
     }
+    return '';
+  }
+
+  function extractCompanyGeneric() {
+    const fromSelectors = companyFromSelectors();
+    if (fromSelectors) return fromSelectors;
 
     const fromLogo = companyFromLogo();
     if (fromLogo) return fromLogo;
@@ -565,13 +929,17 @@
       '[class*="JobDescription"]',
       '[itemprop="description"]',
       'article .content',
+      '[class*="job-description" i]',
+      '[class*="jobDescription" i]',
+      '.prose',
     ];
 
+    const scope = jobScope();
     let best = '';
     let bestScore = 0;
     for (const sel of selectors) {
       try {
-        const el = document.querySelector(sel);
+        const el = scope.querySelector(sel);
         if (!el) continue;
         const probe = textOf(el);
         if (/back to jobs/i.test(probe) && probe.length < 400) continue;
@@ -850,7 +1218,9 @@
    * Unlike "longest container wins", this avoids grabbing page wrappers with sidebars / related jobs.
    */
   function findContentBlocks() {
-    const scope = document.querySelector('main, [role="main"], article') || document.body;
+    const panel = jobScope();
+    const scope =
+      panel !== document ? panel : document.querySelector('main, [role="main"], article') || document.body;
     if (!scope) return [];
     const scores = new Map();
     const add = (el, v) => {
@@ -883,7 +1253,7 @@
       const label = `${el.getAttribute('class') || ''} ${el.id || ''}`.toLowerCase();
       let w = 0;
       if (/description|posting|job|content|article|details|body/.test(label)) w += 25;
-      if (/comment|sidebar|aside|related|similar|recommend|nav|menu|footer|header|share|social|cookie|banner|modal|apply|promo/.test(label)) {
+      if (/comment|sidebar|aside|related|similar|recommend|nav|menu|footer|header|share|social|cookie|banner|apply|promo/.test(label)) {
         w -= 25;
       }
       return w;
@@ -993,8 +1363,10 @@
     const taleoRoot = document.querySelector(
       '.editablesection, [id*="requisitionDescriptionInterface"], .contentlinepanel'
     );
+    const panel = jobScope();
     const root =
       taleoRoot ||
+      (panel !== document ? panel : null) ||
       document.querySelector('main, article, [role="main"], #content, .content') ||
       document.body;
     let text = serializeElement(root);
@@ -1043,7 +1415,13 @@
    */
   HS.extractJobInfoLocal = function extractJobInfoLocal() {
     const ats = detectAts();
-    const jsonLd = extractJsonLd();
+    const visible = normName(document.body?.innerText || '');
+    const shownOnPage = (title) => containsName(visible, normName(title));
+
+    // Structured data can be stale on SPAs (job boards swap jobs without reloading): trust it only
+    // when its title is the job actually shown.
+    let jsonLd = extractJsonLd();
+    if (jsonLd && jsonLd.roleName && !shownOnPage(jsonLd.roleName)) jsonLd = null;
     const atsResult = ats !== 'generic' ? extractByAts(ats) : null;
     const heuristic = extractHeuristic();
     const result = mergeBest([jsonLd, atsResult, heuristic]);
@@ -1052,28 +1430,54 @@
     result.pageTitle = document.title;
     result.ats = ats;
 
-    // Fix common swaps / section-header titles
-    if (isBadRoleTitle(result.roleName)) {
+    // Fix common swaps / section-header titles / board brand as title
+    if (isBadRoleTitle(result.roleName) || isBoardBrand(result.roleName)) {
       result.roleName =
         (atsResult && !isBadRoleTitle(atsResult.roleName) && atsResult.roleName) ||
         extractRoleGeneric() ||
         '';
     }
-    if (
-      !result.companyName ||
-      isBadRoleTitle(result.companyName) ||
-      /job\s*number/i.test(result.companyName) ||
-      result.companyName.length > 80
-    ) {
-      result.companyName = companyFromLogo() || companyFromHost() || result.companyName || '';
-      if (isBadRoleTitle(result.companyName) || /job\s*number/i.test(result.companyName || '')) {
-        result.companyName = companyFromHost() || '';
-      }
+
+    let embeddedJob = null;
+    try {
+      const jobs = findEmbeddedJobs().filter((j) => shownOnPage(j.title));
+      embeddedJob =
+        jobs.find((j) => titleMatches(j.title, result.roleName)) || (!result.roleName ? jobs[0] : null) || null;
+    } catch {
+      /* ignore */
     }
-    if ((!result.jobDescription || result.jobDescription.length < 80) && ats === 'taleo') {
+    if (!result.roleName && embeddedJob) result.roleName = embeddedJob.title;
+
+    // ── Company: scored across all sources, validated against the visible job header
+    const company = resolveCompany({
+      roleName: result.roleName,
+      jsonLd,
+      atsResult,
+      embeddedJob,
+      domCompany: companyFromSelectors(),
+    });
+    result.companyName = company.name;
+    result.companyScore = company.score;
+
+    // ── Description: visible DOM vs. the posting's own HTML from structured data
+    const domCandidates = [atsResult?.jobDescription, heuristic.jobDescription].filter(Boolean);
+    let domDesc = '';
+    if (atsResult?.jobDescription && scoreDescription(atsResult.jobDescription) >= 120) {
+      domDesc = atsResult.jobDescription;
+    } else {
+      domDesc = domCandidates.sort((a, b) => scoreDescription(b) - scoreDescription(a))[0] || '';
+    }
+    if ((!domDesc || domDesc.length < 80) && ats === 'taleo') {
       const d = extractTaleoDescription();
-      if (d && d.length > (result.jobDescription || '').length) result.jobDescription = d;
+      if (d && d.length > domDesc.length) domDesc = d;
     }
+    let structuredDesc = jsonLd?.jobDescription || '';
+    if (embeddedJob) {
+      const raw = decodeEntities(embeddedJob.description);
+      const d = /<[a-z][^>]*>/i.test(raw) ? htmlToStructured(raw) : cleanStructuredText(raw);
+      if (d.length > structuredDesc.length) structuredDesc = d;
+    }
+    result.jobDescription = stripHeaderPreamble(pickDescription(domDesc, structuredDesc), result.roleName);
 
     if (result.jobDescription) {
       result.jobDescription = HS.structureJobDescription
@@ -1082,7 +1486,7 @@
     }
     result.confidence = scoreResult(result);
     result.descriptionScore = scoreDescription(result.jobDescription || '');
-    result.needsLlm = result.confidence < CONFIDENCE_OK;
+    result.needsLlm = result.confidence < CONFIDENCE_OK || company.score < 45;
     return result;
   };
 

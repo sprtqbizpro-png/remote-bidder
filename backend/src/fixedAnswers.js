@@ -278,6 +278,34 @@ function intentFromOptions(fieldMeta = {}) {
   return null;
 }
 
+const COUNTRY_SCOPED_INTENTS = new Set(['work_auth', 'sponsorship', 'citizen']);
+const NON_US_COUNTRY_RE =
+  /\b(canada|canadian|united\s+kingdom|\buk\b|britain|england|ireland|europe|european\s+union|\beu\b|germany|france|spain|portugal|italy|netherlands|belgium|switzerland|austria|poland|sweden|norway|denmark|finland|india|australia|new\s+zealand|mexico|brazil|argentina|colombia|singapore|japan|china|hong\s+kong|israel|uae|philippines)\b/i;
+
+/**
+ * Intents whose stored answer can be reused without semantic checking: the meaning is
+ * unambiguous once detected. Location fields only qualify as bare labels ("City", "State"),
+ * so prompts like "Please state your salary expectations" never reuse the State answer.
+ */
+const FAST_PATH_INTENTS = new Set([
+  'email', 'phone', 'first_name', 'last_name', 'full_name', 'linkedin', 'github', 'pronouns',
+  'gender', 'race', 'hispanic', 'veteran', 'disability', 'orientation', 'lgbtq', 'age_18',
+  // Only detected for US / unspecified-country wording (see COUNTRY_SCOPED_INTENTS)
+  'work_auth', 'sponsorship', 'citizen', 'us_residence',
+]);
+
+/** Full question for a meaning-grouped row — clearer for semantic matching than "Work authorization". */
+export function canonicalQuestionForIntent(intent) {
+  return INTENT_CANONICAL_PATTERNS[intent]?.[0] || INTENT_DISPLAY_LABEL[intent] || '';
+}
+const FAST_PATH_SHORT_LABEL_INTENTS = new Set(['portfolio', 'address', 'city', 'state', 'postal', 'country']);
+
+export function isFastPathIntent(intent, question) {
+  if (!intent) return false;
+  if (FAST_PATH_INTENTS.has(intent)) return true;
+  return FAST_PATH_SHORT_LABEL_INTENTS.has(intent) && normalizeQuestion(question).length <= 40;
+}
+
 export function detectQuestionIntent(question, fieldMeta = {}) {
   const q = stripHelperNoise(question).toLowerCase();
 
@@ -305,6 +333,8 @@ export function detectQuestionIntent(question, fieldMeta = {}) {
   if (q) {
     for (const { intent, re } of INTENT_DETECTORS) {
       if (intent === 'first_name' || intent === 'last_name') continue;
+      // The stored work-auth/sponsorship/citizenship answers are US answers; other countries differ
+      if (COUNTRY_SCOPED_INTENTS.has(intent) && NON_US_COUNTRY_RE.test(q)) continue;
       if (re.test(q)) return intent;
     }
   }
@@ -439,7 +469,7 @@ export function normalizeChoiceAnswer(answer) {
 /**
  * Match saved short answers to the current field via intents + aliases.
  */
-export function matchFixedAnswerSmart(question, fixedAnswers, fieldMeta = {}) {
+export function matchFixedAnswerSmart(question, fixedAnswers, fieldMeta = {}, { fuzzy = true } = {}) {
   if (!question || !fixedAnswers?.length) return null;
   const qRaw = stripHelperNoise(question);
   const q = qRaw.toLowerCase();
@@ -473,7 +503,15 @@ export function matchFixedAnswerSmart(question, fixedAnswers, fieldMeta = {}) {
     }
   }
 
-  if (intent && INTENT_STORE_RE[intent]) {
+  // "Years of experience" is skill-specific and location labels are only safe as bare labels
+  // ("State", not "Please state your salary…"): don't reuse a stored answer by intent alone.
+  const intentReusable =
+    intent &&
+    INTENT_STORE_RE[intent] &&
+    intent !== 'experience_years' &&
+    (!FAST_PATH_SHORT_LABEL_INTENTS.has(intent) || qRaw.length <= 40);
+
+  if (intentReusable) {
     // Prefer the single intent-keyed row (meaning-based store)
     const byIntent = fixedAnswers.find(
       (fa) =>
@@ -497,6 +535,8 @@ export function matchFixedAnswerSmart(question, fixedAnswers, fieldMeta = {}) {
     const phone = getAnswerByPattern(fixedAnswers, (p) => /phone|mobile|telephone|cell/i.test(p));
     if (phone) return phone;
   }
+
+  if (!fuzzy) return null;
 
   // Fuzzy: token overlap for remembered exact phrasings
   let best = null;

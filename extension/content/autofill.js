@@ -319,6 +319,16 @@
     return best || '';
   }
 
+  /** Number of distinct fields under root (a radio/checkbox group counts once). */
+  function distinctFieldCount(root) {
+    const keys = new Set();
+    root.querySelectorAll('input:not([type="hidden"]), select, textarea').forEach((c) => {
+      const t = (c.type || '').toLowerCase();
+      keys.add((t === 'radio' || t === 'checkbox') && c.name ? `group:${c.name}` : c);
+    });
+    return keys.size;
+  }
+
   /** Floating MUI / outlined-select labels live inside the same box as the control. */
   function floatingLabelNear(el) {
     const wrap =
@@ -326,10 +336,14 @@
         '.MuiFormControl-root, .MuiTextField-root, [class*="FormControl"], [class*="form-control"], [class*="field"], label, [class*="select"], [class*="Select"]'
       ) || el.parentElement;
     if (!wrap) return '';
+    // A box holding several fields (a whole form, a row of inputs) can't say which label is ours
+    if (distinctFieldCount(wrap) > 1) return '';
     const nodes = wrap.querySelectorAll(
       'label, legend, [class*="InputLabel"], [class*="FormLabel"], [class*="label"], legend'
     );
     for (const lab of nodes) {
+      // A <label for="x"> belongs to control x, never to a neighbour
+      if (lab.tagName === 'LABEL' && lab.htmlFor && lab.htmlFor !== el.id) continue;
       const clone = lab.cloneNode(true);
       clone.querySelectorAll('input, select, textarea, button, svg').forEach((n) => n.remove());
       const t = normalizeLabel(clone.innerText || clone.textContent || '');
@@ -1897,6 +1911,27 @@
     return false;
   }
 
+  /**
+   * Options as plain strings for the backend / LLM. Choice-button groups carry DOM elements
+   * ({ yes, no }) that don't survive messaging, so they become ['Yes', 'No'].
+   */
+  function serializableOptions(options) {
+    if (Array.isArray(options)) {
+      const list = options.map((o) => normalizeLabel(String(o ?? ''))).filter(Boolean);
+      return list.length ? list.slice(0, 60) : undefined;
+    }
+    if (options && options.yes && options.no) return ['Yes', 'No'];
+    return undefined;
+  }
+  HS.serializableOptions = serializableOptions;
+
+  function selectOptionLabels(select) {
+    return Array.from(select.options || [])
+      .filter((o) => !o.disabled && String(o.value ?? '') !== '')
+      .map((o) => normalizeLabel(o.textContent || o.label || ''))
+      .filter((t) => t && !/^(select|choose|please select|--)/i.test(t));
+  }
+
   HS.collectQuestions = function collectQuestions() {
     const questions = [];
     const seen = new Set();
@@ -1937,6 +1972,9 @@
         optionLabels = radiosInGroup(el)
           .map((r) => optionLabel(r) || r.value || '')
           .filter(Boolean);
+      } else if (el.tagName === 'SELECT') {
+        // Lets the backend / LLM answer with a value that actually exists in the dropdown
+        optionLabels = selectOptionLabels(el);
       }
 
       let question =
@@ -2915,6 +2953,7 @@
           id: q.id,
           tag: q.tag || 'input',
           type,
+          options: serializableOptions(q.options),
         });
       }
     } catch (err) {

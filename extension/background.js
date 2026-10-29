@@ -290,10 +290,12 @@ async function handleMessage(message, sender = {}) {
     }
 
     case 'SAVE_FIXED_ANSWERS_BULK': {
+      // The key lets the server match learned questions by meaning and store a reusable phrasing
+      const { openaiApiKey } = await chrome.storage.sync.get({ openaiApiKey: '' });
       const res = await fetch(`${api}/api/answers/fixed/bulk`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(message.payload),
+        body: JSON.stringify({ ...message.payload, apiKey: openaiApiKey || undefined }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Bulk save failed');
