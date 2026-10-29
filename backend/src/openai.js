@@ -99,22 +99,23 @@ export async function extractJobFromPage({
   const completion = await openai.chat.completions.create({
     model: 'gpt-4o-mini',
     temperature: 0.1,
-    max_tokens: 2500,
+    max_tokens: 4096,
     response_format: { type: 'json_object' },
     messages: [
       {
         role: 'system',
-        content: `You extract job posting fields from messy webpage text.
+        content: `You extract job posting fields from webpage text.
 Return ONLY valid JSON with keys:
 companyName (string), roleName (string), jobDescription (string), location (string|null), confidence (number 0-1).
 
+The page text is already lightly formatted: "## " marks headings, "- " or "1. " marks list items, a blank line separates paragraphs, and a single newline is a line break.
+
 Rules for jobDescription:
-- Include only the actual job posting content (about the role, responsibilities, requirements, benefits).
-- ALWAYS use Markdown structure: ## headings for sections, - for bullet lists, blank lines between paragraphs.
-- Never return one continuous paragraph when the posting has sections.
-- Exclude UI chrome: Back to jobs, Apply, New, Share, Save, Sign in, cookie banners, nav, footers, employee counts, related jobs.
-- Exclude screenshot/alt-text noise and map-pin-only lines unless location is part of the posting body.
-- Keep it clean and readable. Do not invent content.`,
+- Select the contiguous span of the page that is the job posting body (about the role/company, responsibilities, requirements, benefits, etc.) and copy it VERBATIM.
+- Do not rephrase, summarize, reorder, translate, or fix wording. Keep every sentence of the posting body.
+- Preserve the original line breaks, blank lines, headings and list markers exactly as they appear. Do not add headings or bullets that are not in the text, and do not merge or split paragraphs.
+- Drop only content that is not part of the posting: navigation, Apply/Save/Share/Sign in buttons, cookie banners, footers, related or similar jobs, employee counts, application form fields.
+- Never invent content.`,
       },
       {
         role: 'user',

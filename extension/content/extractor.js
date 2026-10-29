@@ -83,31 +83,29 @@
     return '';
   }
 
-  const NOISE_SELECTORS = [
-    'script',
-    'style',
-    'noscript',
-    'svg',
-    'img',
-    'picture',
-    'video',
-    'iframe',
-    'nav',
-    'header',
-    'footer',
-    'form',
-    'button',
-    'input',
-    'select',
-    'textarea',
-    '[role="button"]',
-    '[role="navigation"]',
-    '[role="banner"]',
-    '[role="contentinfo"]',
-    '[aria-hidden="true"]',
-    '.sr-only',
-    '.visually-hidden',
-  ].join(',');
+  /** UI chrome that must never end up inside a description (subset of NOISE_LINE: no job-meta chips). */
+  const UI_NOISE_LINE =
+    /^(back to jobs?|back|apply( now)?|apply for this job|easy apply|save( job)?|share( this job)?|new|featured|report( this)?( job)?|show more|show less|see more|read more|cookie|accept all|sign in|log in|follow|employees? on linkedin)$/i;
+  const LEAF_BADGE = /^(apply|new|hot|urgent|hiring|remote only)$/i;
+
+  const SKIP_TAGS = new Set([
+    'script', 'style', 'noscript', 'template', 'svg', 'img', 'picture', 'video', 'audio', 'canvas',
+    'iframe', 'object', 'nav', 'header', 'footer', 'button', 'input', 'select', 'textarea', 'label',
+    'dialog',
+  ]);
+  const SKIP_ROLES = /^(button|navigation|banner|contentinfo|dialog|alertdialog|tooltip|menu|menubar|search)$/i;
+  const HIDDEN_CLASS_RE = /(^|\s)(sr-only|visually-hidden|visuallyhidden|screen-reader-text|screenreader|a11y-hidden|assistive-text)(\s|$)/i;
+  const NOISE_CLASS_TOKENS = new Set([
+    'cookie', 'cookies', 'breadcrumb', 'breadcrumbs', 'share', 'social', 'related', 'similar',
+    'recommended', 'recommendations', 'tooltip', 'modal', 'toast',
+  ]);
+  /** Used when there is no layout (DOMParser documents, e.g. JSON-LD HTML). */
+  const BLOCK_TAGS = new Set([
+    'address', 'article', 'aside', 'blockquote', 'caption', 'center', 'dd', 'details', 'div', 'dl',
+    'dt', 'fieldset', 'figcaption', 'figure', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'li', 'main',
+    'ol', 'p', 'pre', 'section', 'summary', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'ul',
+  ]);
+  const PARAGRAPH_TAGS = new Set(['p', 'blockquote', 'pre', 'table', 'dl', 'figure']);
 
   function textOf(el) {
     return (el?.innerText || el?.textContent || '').replace(/\s+/g, ' ').trim();
@@ -182,11 +180,9 @@
             (typeof item.hiringOrganization === 'string' ? item.hiringOrganization : '') ||
             '';
 
-          let description = item.description || '';
-          if (description && /<[^>]+>/.test(description)) {
-            const tmp = document.createElement('div');
-            tmp.innerHTML = description;
-            description = serializeStructured(prepareClone(tmp)) || textOf(tmp);
+          let description = decodeEntities(item.description || '');
+          if (description && /<[a-z][^>]*>/i.test(description)) {
+            description = htmlToStructured(description);
           } else {
             description = cleanStructuredText(String(description));
           }
@@ -302,7 +298,7 @@
     for (const sel of selectors) {
       try {
         for (const el of document.querySelectorAll(sel)) {
-          const t = serializeStructured(prepareClone(el));
+          const t = serializeElement(el);
           const s = scoreDescription(t);
           if (s > bestScore) {
             bestScore = s;
@@ -426,7 +422,7 @@
       const sections = document.querySelectorAll(cfg.desc.join(','));
       const parts = [];
       sections.forEach((el) => {
-        const t = serializeStructured(prepareClone(el));
+        const t = serializeElement(el);
         if (t && scoreDescription(t) >= 30) parts.push(t);
       });
       jobDescription = cleanStructuredText(parts.join('\n\n'));
@@ -434,7 +430,7 @@
       for (const sel of cfg.desc) {
         const el = document.querySelector(sel);
         if (!el) continue;
-        const t = serializeStructured(prepareClone(el));
+        const t = serializeElement(el);
         if (scoreDescription(t) >= 80) {
           jobDescription = t;
           break;
@@ -545,7 +541,7 @@
     if (multiSection.length >= 2) {
       const parts = [];
       multiSection.forEach((el) => {
-        const t = serializeStructured(prepareClone(el));
+        const t = serializeElement(el);
         if (t && scoreDescription(t) >= 40) parts.push(t);
       });
       const joined = cleanStructuredText(parts.join('\n\n'));
@@ -579,7 +575,7 @@
         if (!el) continue;
         const probe = textOf(el);
         if (/back to jobs/i.test(probe) && probe.length < 400) continue;
-        const structured = serializeStructured(prepareClone(el));
+        const structured = serializeElement(el);
         const s = scoreDescription(structured);
         if (s > bestScore) {
           bestScore = s;
@@ -591,27 +587,19 @@
     }
     if (bestScore >= 120) return best;
 
-    document.querySelectorAll('main, article, [role="main"], .content, #content').forEach((root) => {
-      root.querySelectorAll('section, div, article').forEach((el) => {
-        if (el.children.length > 60) return;
-        const label = `${el.className || ''} ${el.id || ''}`.toLowerCase();
-        if (/nav|header|footer|sidebar|modal|cookie|banner|apply|button/.test(label)) return;
-        try {
-          const structured = serializeStructured(prepareClone(el));
-          const s = scoreDescription(structured);
-          if (s > bestScore) {
-            bestScore = s;
-            best = structured;
-          }
-        } catch {
-          /* ignore */
-        }
-      });
-    });
+    try {
+      const blocks = findContentBlocks();
+      const structured = cleanStructuredText(blocks.map((el) => serializeElement(el)).join('\n\n'));
+      const s = scoreDescription(structured);
+      if (s > bestScore) {
+        bestScore = s;
+        best = structured;
+      }
+    } catch {
+      /* ignore */
+    }
 
-    return bestScore >= 80
-      ? best
-      : cleanPlainText(best || textOf(document.querySelector('main, article')) || '');
+    return best;
   }
 
   function extractHeuristic() {
@@ -632,106 +620,299 @@
   }
 
   // ─── Cleaning / serialize (shared) ─────────────────────────
-  function prepareClone(el) {
-    const clone = el.cloneNode(true);
-    clone.querySelectorAll(NOISE_SELECTORS).forEach((n) => n.remove());
-
-    clone.querySelectorAll('a, span, div, p, li').forEach((node) => {
-      const t = (node.textContent || '').replace(/\s+/g, ' ').trim();
-      if (!t) return;
-      if (NOISE_LINE.test(t)) {
-        node.remove();
-        return;
-      }
-      if (
-        node.childElementCount === 0 &&
-        t.length <= 24 &&
-        /^(apply|new|hot|urgent|hiring|remote only)$/i.test(t)
-      ) {
-        node.remove();
-      }
-    });
-
-    clone.querySelectorAll('div, span, section').forEach((node) => {
-      if (!(node.textContent || '').trim()) node.remove();
-    });
-
-    return clone;
+  function isApplicationForm(form) {
+    return (
+      !!form.querySelector('input[type="file"]') ||
+      form.querySelectorAll('input[type="text"], input[type="email"], input[type="tel"], textarea').length >= 3
+    );
   }
 
-  function serializeStructured(root) {
-    const lines = [];
+  /** Hidden, decorative or UI-chrome element whose subtree should not be serialized. */
+  function isSkippable(el, cs) {
+    const tag = el.localName;
+    if (SKIP_TAGS.has(tag)) return true;
+    if (tag === 'form' && isApplicationForm(el)) return true;
+    if (el.hidden || el.getAttribute('aria-hidden') === 'true') return true;
+    const role = el.getAttribute('role');
+    if (role && SKIP_ROLES.test(role)) return true;
+    const cls = el.getAttribute('class') || '';
+    if (HIDDEN_CLASS_RE.test(cls)) return true;
+    const tokens = `${cls} ${el.id || ''}`.toLowerCase().split(/[\s_-]+/);
+    if (tokens.some((t) => NOISE_CLASS_TOKENS.has(t))) return true;
+    if (cs) {
+      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.visibility === 'collapse') return true;
+      // Screen-reader-only text: absolutely positioned and clipped to ~1px
+      if (
+        cs.position === 'absolute' &&
+        (cs.clip !== 'auto' || cs.clipPath !== 'none' || (parseFloat(cs.width) <= 1 && parseFloat(cs.height) <= 1))
+      ) {
+        return true;
+      }
+    }
+    const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    if (t && t.length <= 40) {
+      if (UI_NOISE_LINE.test(t)) return true;
+      if (el.childElementCount === 0 && LEAF_BADGE.test(t)) return true;
+    }
+    return false;
+  }
 
-    function pushBlank() {
-      if (lines.length && lines[lines.length - 1] !== '') lines.push('');
+  /** Short block whose visible text is entirely bold, e.g. <p><strong>Requirements:</strong></p>. */
+  function isEmphasisHeading(el, text) {
+    if (!text || text.length > 80 || /[.,;!?]$/.test(text)) return false;
+    const walker = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    let sawText = false;
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (!n.nodeValue.trim()) continue;
+      sawText = true;
+      let bold = false;
+      for (let p = n.parentElement; p && p !== el.parentElement; p = p.parentElement) {
+        if (p.localName === 'strong' || p.localName === 'b') {
+          bold = true;
+          break;
+        }
+      }
+      if (!bold) return false;
+    }
+    return sawText;
+  }
+
+  /**
+   * Serialize a DOM subtree into light Markdown that mirrors what the reader sees:
+   * - live documents use computed styles (skips hidden content, real block/inline layout, white-space: pre*)
+   * - detached documents (DOMParser) fall back to tag-based layout
+   * Headings → "## ", list items → "- " / "1. ", paragraphs separated by a blank line, <br> → newline.
+   */
+  function serializeDom(root, live) {
+    let out = '';
+    let pending = 0; // 0 none, 1 newline, 2 blank line
+    let prefix = '';
+
+    function brk(n) {
+      if (out) pending = Math.max(pending, n);
+    }
+    function lineBreak() {
+      if (out) pending = pending >= 1 ? 2 : 1;
+    }
+    function emit(s) {
+      if (!s) return;
+      if (!s.trim()) {
+        if (out && !pending && !/[ \n]$/.test(out)) out += ' ';
+        return;
+      }
+      if (pending) {
+        out = out.replace(/ +$/, '');
+        if (out) out += pending === 2 ? '\n\n' : '\n';
+        pending = 0;
+      }
+      if (!out || /[\n ]$/.test(out)) s = s.replace(/^ +/, '');
+      if (prefix) {
+        out += prefix;
+        prefix = '';
+      }
+      out += s;
+    }
+    function emitText(raw, pre) {
+      const s = raw.replace(/[​-‍﻿]/g, '');
+      if (!pre) {
+        emit(s.replace(/\s+/g, ' '));
+        return;
+      }
+      s.split('\n').forEach((part, i) => {
+        if (i) lineBreak();
+        emit(part.replace(/[ \t\r\f]+/g, ' '));
+      });
+    }
+    function inlineText(el) {
+      return serializeDom(el, live).replace(/^#+\s*/gm, '').replace(/\s+/g, ' ').trim();
     }
 
-    function walk(node) {
-      if (!node) return;
+    function walk(node, ctx, isRoot) {
       if (node.nodeType === Node.TEXT_NODE) {
-        const t = node.textContent.replace(/\s+/g, ' ');
-        if (!t.trim()) return;
-        if (lines.length && lines[lines.length - 1] !== '' && !/^[•\-\d]/.test(lines[lines.length - 1])) {
-          lines[lines.length - 1] = `${lines[lines.length - 1]}${t}`.replace(/\s+/g, ' ').trimEnd();
-        } else if (t.trim()) {
-          lines.push(t.trim());
-        }
+        emitText(node.nodeValue, ctx.pre);
         return;
       }
       if (node.nodeType !== Node.ELEMENT_NODE) return;
-
-      const tag = node.tagName.toLowerCase();
-      if (['script', 'style', 'noscript', 'svg', 'img', 'br'].includes(tag)) {
-        if (tag === 'br') pushBlank();
+      const el = node;
+      const tag = el.localName;
+      if (tag === 'br') {
+        lineBreak();
+        return;
+      }
+      const cs = live ? getComputedStyle(el) : null;
+      if (!isRoot && isSkippable(el, cs)) return;
+      if (tag === 'hr') {
+        brk(2);
+        emit('---');
+        brk(2);
         return;
       }
 
-      if (/^h[1-6]$/.test(tag)) {
-        pushBlank();
-        const level = Number(tag[1]);
-        const title = textOf(node);
-        if (title && !NOISE_LINE.test(title)) {
-          lines.push(`${'#'.repeat(Math.min(level, 3))} ${title}`);
-          pushBlank();
-        }
-        return;
-      }
+      const display = cs ? cs.display : BLOCK_TAGS.has(tag) ? 'block' : 'inline';
+      const block = !/^(inline|contents)/.test(display) || tag === 'li';
+      const pre =
+        ctx.pre || (cs ? /^(pre|pre-wrap|pre-line|break-spaces)$/.test(cs.whiteSpace) : tag === 'pre');
+      const childCtx = { ...ctx, pre };
 
-      if (tag === 'p') {
-        const t = textOf(node);
-        if (t && !NOISE_LINE.test(t)) {
-          pushBlank();
-          lines.push(t);
-          pushBlank();
+      if (!isRoot && /^h[1-6]$/.test(tag)) {
+        const title = inlineText(el);
+        if (title && !UI_NOISE_LINE.test(title)) {
+          brk(2);
+          emit(`${'#'.repeat(Math.min(Number(tag[1]), 3))} ${title}`);
+          brk(2);
         }
         return;
       }
 
       if (tag === 'li') {
-        const t = textOf(node);
-        if (t && !NOISE_LINE.test(t)) lines.push(`• ${t}`);
+        brk(1);
+        const list = el.parentElement;
+        if (list?.localName === 'ol') {
+          const items = Array.from(list.children).filter((c) => c.localName === 'li');
+          const start = Number(list.getAttribute('start')) || 1;
+          prefix = `${start + items.indexOf(el)}. `;
+        } else {
+          prefix = '- ';
+        }
+        Array.from(el.childNodes).forEach((c) => walk(c, { ...childCtx, inLi: true }));
+        prefix = '';
+        brk(1);
         return;
       }
 
       if (tag === 'ul' || tag === 'ol') {
-        pushBlank();
-        Array.from(node.children).forEach((child) => walk(child));
-        pushBlank();
+        brk(1);
+        Array.from(el.childNodes).forEach((c) => walk(c, childCtx));
+        brk(ctx.inLi ? 1 : 2);
         return;
       }
 
-      if (tag === 'hr') {
-        pushBlank();
-        lines.push('---');
-        pushBlank();
+      if (!block) {
+        const spaced = /^inline-(block|flex|grid|table)$/.test(display);
+        if (spaced) emit(' ');
+        Array.from(el.childNodes).forEach((c) => walk(c, childCtx));
+        if (spaced) emit(' ');
         return;
       }
 
-      Array.from(node.childNodes).forEach((child) => walk(child));
+      if (!ctx.inLi && !isRoot && tag !== 'td' && tag !== 'th') {
+        const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (isEmphasisHeading(el, text)) {
+          brk(2);
+          emit(`## ${inlineText(el).replace(/\s*:$/, '')}`);
+          brk(2);
+          return;
+        }
+      }
+
+      let gap = 1;
+      if (!ctx.inLi) {
+        if (cs) {
+          gap = parseFloat(cs.marginTop) >= 8 || parseFloat(cs.marginBottom) >= 8 ? 2 : 1;
+        } else if (PARAGRAPH_TAGS.has(tag)) {
+          gap = 2;
+        }
+      }
+      brk(gap);
+      Array.from(el.childNodes).forEach((c) => walk(c, childCtx));
+      brk(gap);
     }
 
-    walk(root);
-    return cleanStructuredText(lines.join('\n'));
+    walk(root, { pre: false, inLi: false }, true);
+    return out.trim();
+  }
+
+  /** Visible, structured text of a live element (or of a detached element when live=false). */
+  function serializeElement(el, live = true) {
+    if (!el) return '';
+    return cleanStructuredText(serializeDom(el, live && el.ownerDocument === document));
+  }
+
+  /** HTML string (e.g. JSON-LD description) → structured text, parsed inertly. */
+  function htmlToStructured(html) {
+    const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+    return serializeElement(doc.body, false);
+  }
+
+  /** Decode entity-escaped markup like "&lt;p&gt;Hello&lt;/p&gt;" (sometimes double-escaped). */
+  function decodeEntities(s) {
+    let text = String(s || '');
+    for (let i = 0; i < 2; i++) {
+      if (/<[a-z][^>]*>/i.test(text) || !/&(lt|gt|amp|quot|nbsp|#\d+|#x[0-9a-f]+);/i.test(text)) break;
+      text = new DOMParser().parseFromString(text, 'text/html').body.textContent || '';
+    }
+    return text;
+  }
+
+  /**
+   * Readability-style pick of the main content block(s): score paragraph-like nodes,
+   * propagate to ancestors, penalize link-heavy and chrome-like containers.
+   * Unlike "longest container wins", this avoids grabbing page wrappers with sidebars / related jobs.
+   */
+  function findContentBlocks() {
+    const scope = document.querySelector('main, [role="main"], article') || document.body;
+    if (!scope) return [];
+    const scores = new Map();
+    const add = (el, v) => {
+      if (el && el !== document.documentElement && scope.contains(el)) scores.set(el, (scores.get(el) || 0) + v);
+    };
+    const visible = (el) => (el.checkVisibility ? el.checkVisibility() : el.getClientRects().length > 0);
+    const chrome = 'nav, header, footer, aside, [role="navigation"], [role="banner"], [role="contentinfo"], [aria-hidden="true"]';
+
+    const paras = Array.from(scope.querySelectorAll('p, li, pre, td, blockquote'));
+    scope.querySelectorAll('div, span').forEach((el) => {
+      const direct = Array.from(el.childNodes)
+        .filter((n) => n.nodeType === Node.TEXT_NODE)
+        .map((n) => n.nodeValue)
+        .join('')
+        .trim();
+      if (direct.length >= 40) paras.push(el);
+    });
+
+    for (const p of paras) {
+      if (p.closest(chrome) || !visible(p)) continue;
+      const text = (p.textContent || '').replace(/\s+/g, ' ').trim();
+      if (text.length < 25) continue;
+      const s = 1 + (text.match(/,/g) || []).length + Math.min(Math.floor(text.length / 100), 3);
+      add(p.parentElement, s);
+      add(p.parentElement?.parentElement, s / 2);
+      add(p.parentElement?.parentElement?.parentElement, s / 3);
+    }
+
+    const weight = (el) => {
+      const label = `${el.getAttribute('class') || ''} ${el.id || ''}`.toLowerCase();
+      let w = 0;
+      if (/description|posting|job|content|article|details|body/.test(label)) w += 25;
+      if (/comment|sidebar|aside|related|similar|recommend|nav|menu|footer|header|share|social|cookie|banner|modal|apply|promo/.test(label)) {
+        w -= 25;
+      }
+      return w;
+    };
+    const linkDensity = (el) => {
+      const total = (el.textContent || '').length || 1;
+      let links = 0;
+      el.querySelectorAll('a').forEach((a) => (links += (a.textContent || '').length));
+      return links / total;
+    };
+
+    let top = null;
+    let topScore = 0;
+    const final = new Map();
+    scores.forEach((s, el) => {
+      const v = (s + weight(el)) * (1 - linkDensity(el));
+      final.set(el, v);
+      if (v > topScore) {
+        topScore = v;
+        top = el;
+      }
+    });
+    if (!top) return [];
+
+    // Include strong siblings (descriptions split across adjacent sections), in DOM order
+    const parent = top.parentElement;
+    if (!parent) return [top];
+    const threshold = Math.max(10, topScore * 0.2);
+    return Array.from(parent.children).filter((c) => c === top || (final.get(c) || 0) >= threshold);
   }
 
   function cleanStructuredText(text) {
@@ -745,10 +926,10 @@
         continue;
       }
 
-      line = line.replace(/^•\s*•\s*/, '• ');
-      if (NOISE_LINE.test(line.replace(/^#+\s*/, '').replace(/^•\s*/, ''))) continue;
+      line = line.replace(/^([•-])\s*[•-]\s+/, '$1 ');
+      if (UI_NOISE_LINE.test(line.replace(/^#+\s*/, '').replace(/^[•-]\s*/, ''))) continue;
       if (/^#{1,3}\s*(back to|apply|new)\b/i.test(line)) continue;
-      if (/^[📍📌]/.test(line)) continue;
+      if (/^(📍|📌)/u.test(line)) continue;
       if (/^(location|workplace type|department|employment type)\s*[:|]?\s*$/i.test(line)) continue;
       if (/back to jobs/i.test(line) && line.length < 80) continue;
       if (/^(apply|new){1,3}$/i.test(line.replace(/\s+/g, ''))) continue;
@@ -816,8 +997,7 @@
       taleoRoot ||
       document.querySelector('main, article, [role="main"], #content, .content') ||
       document.body;
-    const clone = prepareClone(root);
-    let text = serializeStructured(clone);
+    let text = serializeElement(root);
     if (!text || text.length < 80) {
       text = cleanPlainText(textOf(root));
     }
@@ -901,6 +1081,7 @@
         : cleanStructuredText(result.jobDescription);
     }
     result.confidence = scoreResult(result);
+    result.descriptionScore = scoreDescription(result.jobDescription || '');
     result.needsLlm = result.confidence < CONFIDENCE_OK;
     return result;
   };

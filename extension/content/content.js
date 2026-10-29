@@ -2192,8 +2192,12 @@
         setStatus(forceLlm ? 'Running AI extraction…' : 'Low confidence — asking OpenAI…', false, 'busy');
         try {
           const ai = await runLlmExtract(local);
+          // Low confidence is often just a missing company/role. A solid DOM-extracted description
+          // keeps the page's exact wording and layout, so prefer it over the model's copy.
+          const keepLocalDesc = !forceLlm && (local.descriptionScore || 0) >= 250;
           finalInfo = {
             ...ai,
+            jobDescription: keepLocalDesc ? local.jobDescription : ai.jobDescription || local.jobDescription,
             resumeDriveLink: lastResumeLink,
             resumeDriveFileId: lastResumeFileId,
             steps: { ...steps, extract: true },

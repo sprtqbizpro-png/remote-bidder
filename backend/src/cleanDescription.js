@@ -1,91 +1,80 @@
+// Keep in sync with extension/content/descFormat.js and web/src/lib/jobDescription.js.
+
 const NOISE_LINE =
   /^(back to jobs?|back|apply( now)?|apply for this job|easy apply|save job|share|new|featured|show more|show less|see more|read more|sign in|log in)$/i;
 
 const SECTION_RE =
-  /^(#{1,3}\s*)?(about(\s+the)?\s+(role|job|company|team|us)|the\s+role|overview|summary|what\s+you.?ll\s+do|what\s+you\s+will\s+do|responsibilit(y|ies)|requirement(s)?|qualifications?|preferred\s+qualifications?|nice\s+to\s+have|must\s+have|benefits?|perks?|compensation|location|how\s+to\s+apply|who\s+you\s+are|you\s+will|we\s+are\s+looking)\s*:?\s*$/i;
+  /^(about(\s+the)?\s+(role|job|position|opportunity|company|team|us|you)|the\s+role|the\s+opportunity|overview|summary|job\s+description|what\s+you.?ll\s+do|what\s+you\s+will\s+do|what\s+you.?ll\s+bring|what\s+we\s+offer|what\s+we.?re\s+looking\s+for|(key\s+)?responsibilit(y|ies)|((minimum|basic|preferred)\s+)?(requirements?|qualifications?)|nice\s+to\s+have|must\s+have|benefits?|perks?|compensation|location|how\s+to\s+apply|who\s+you\s+are|you\s+will|we\s+are\s+looking)\s*:?$/i;
+
+/** Section labels inside a single run-on blob; a trailing colon is required so prose is never split. */
+const INLINE_SECTION_RE =
+  /\s*\b(About the Role|About the Job|About the Company|About Us|About You|What You.?ll Do|What You Will Do|What We Offer|Key Responsibilities|Responsibilities|Requirements|Minimum Qualifications|Preferred Qualifications|Qualifications|Nice to Have|Must Have|Benefits|Perks|Compensation|How to Apply|Who You Are)\s*:\s*/g;
+
+const BULLET_RE = /^(?:[•●▪◦‣▸►■✓✔➤]\s*|[-*–]\s+)/;
 
 /**
- * Turn flat / messy JD text into structured Markdown (headings + bullets + paragraphs).
+ * Normalize extracted text to light Markdown (## headings, "- " bullets) while keeping
+ * the original paragraph and line breaks. Idempotent.
  */
 export function structureJobDescription(text) {
   let cleaned = cleanJobDescription(text);
   if (!cleaned) return '';
 
-  // Already looks structured
-  const hasStructure =
-    /^#+\s+/m.test(cleaned) ||
-    /^[-•*]\s+/m.test(cleaned) ||
-    (cleaned.includes('\n\n') && cleaned.split('\n').length >= 4);
-
-  if (!hasStructure) {
+  // Only a single run-on blob gets boundaries recovered — and only at explicit markers.
+  if (!cleaned.includes('\n') && cleaned.length > 400) {
     cleaned = cleaned
-      .replace(/\s+/g, ' ')
-      .replace(
-        /\b(About the Role|About the Job|About the Company|About Us|The Role|Overview|Summary|What You.?ll Do|What You Will Do|Responsibilities|Requirements|Qualifications|Preferred Qualifications|Nice to Have|Must Have|Benefits|Perks|Compensation|Location|How to Apply|Who You Are)\s*:?\s*/gi,
-        '\n\n## $1\n\n'
-      )
-      .replace(/([.!?])\s+(?=[A-Z])/g, '$1\n\n')
-      .replace(/\s*[•●▪︎]\s*/g, '\n- ')
-      .replace(/\s*;\s+(?=[A-Z])/g, '\n- ')
+      .replace(INLINE_SECTION_RE, '\n\n$1:\n')
+      .replace(/\s+(?=[•●▪◦‣▸►■✓✔➤]\s*\S)/g, '\n')
       .trim();
   }
 
-  const lines = cleaned.split(/\n/);
   const out = [];
-
-  for (let line of lines) {
-    line = line.replace(/[ \t]+/g, ' ').trim();
+  let danglingBullet = false;
+  for (let line of cleaned.split('\n')) {
+    line = line.trim();
     if (!line) {
-      if (out.length && out[out.length - 1] !== '') out.push('');
+      if (!danglingBullet && out.length && out[out.length - 1] !== '') out.push('');
+      continue;
+    }
+    if (danglingBullet) {
+      danglingBullet = false;
+      out.push(`- ${line.replace(BULLET_RE, '')}`);
       continue;
     }
 
-    // Promote section titles
-    const plain = line.replace(/^#+\s*/, '').replace(/^[-•*]\s*/, '');
-    if (SECTION_RE.test(plain) && !/^#+\s+/.test(line)) {
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    const plain = line.replace(BULLET_RE, '');
+    if (heading || (plain.length <= 60 && SECTION_RE.test(plain))) {
+      const hashes = heading ? heading[1].slice(0, 3) : '##';
+      const title = (heading ? heading[2] : plain).replace(/\s*:$/, '');
       if (out.length && out[out.length - 1] !== '') out.push('');
-      out.push(`## ${plain.replace(/:$/, '')}`);
+      out.push(`${hashes} ${title}`);
       out.push('');
       continue;
     }
 
-    // Normalize bullets
-    if (/^[-•*]\s+/.test(line)) {
-      out.push(`- ${line.replace(/^[-•*]\s+/, '')}`);
+    if (BULLET_RE.test(line) || /^[•●▪◦‣▸►■✓✔➤]$/.test(line)) {
+      const body = line.replace(BULLET_RE, '').replace(/^[•●▪◦‣▸►■✓✔➤]$/, '').trim();
+      // Bullet glyph rendered as its own element: attach it to the next line
+      if (!body) danglingBullet = true;
+      else out.push(`- ${body}`);
       continue;
-    }
-
-    // Split run-on bullet-like clauses inside a paragraph
-    if (
-      !/^#+\s+/.test(line) &&
-      line.length > 160 &&
-      (line.match(/;\s+/g) || []).length >= 2 &&
-      !line.includes('http')
-    ) {
-      const parts = line.split(/;\s+/).map((p) => p.trim()).filter(Boolean);
-      if (parts.length >= 3 && parts.every((p) => p.length < 140)) {
-        parts.forEach((p) => out.push(`- ${p.replace(/\.$/, '')}`));
-        out.push('');
-        continue;
-      }
     }
 
     out.push(line);
   }
 
-  return out
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-    .slice(0, 20000);
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, 20000);
 }
 
 export function cleanJobDescription(text) {
   if (!text) return '';
-  const lines = String(text)
-    .replace(/\u00a0/g, ' ')
-    .split(/\r?\n/);
   const out = [];
+  const lines = String(text)
+    .replace(/\r\n?/g, '\n')
+    .replace(/[   ]/g, ' ')
+    .replace(/[​-‍﻿]/g, '')
+    .split('\n');
 
   for (let line of lines) {
     line = line.replace(/[ \t]+/g, ' ').trim();
@@ -94,27 +83,13 @@ export function cleanJobDescription(text) {
       continue;
     }
 
-    const plain = line.replace(/^#+\s*/, '').replace(/^•\s*/, '').replace(/^[-*]\s*/, '');
+    const plain = line.replace(/^#+\s*/, '').replace(BULLET_RE, '');
     if (NOISE_LINE.test(plain)) continue;
     if (/back to jobs/i.test(line) && line.length < 80) continue;
-    if (/^[📍📌]/.test(line)) continue;
     if (/^(apply|new){1,3}$/i.test(line.replace(/\s+/g, ''))) continue;
 
     out.push(line);
   }
 
-  let cleaned = out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-
-  if (cleaned && !cleaned.includes('\n') && cleaned.length > 280) {
-    cleaned = cleaned
-      .replace(/\s+/g, ' ')
-      .replace(
-        /(Responsibilities|Requirements|Qualifications|About the (Role|Company|Team)|What You.?ll Do|Benefits|Nice to Have|Preferred)\s*:/gi,
-        '\n\n## $1\n\n'
-      )
-      .replace(/([.!?])\s+(?=[A-Z])/g, '$1\n\n')
-      .trim();
-  }
-
-  return cleaned;
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }

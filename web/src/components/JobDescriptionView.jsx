@@ -27,11 +27,20 @@ export default function JobDescriptionView({ text }) {
             </ul>
           );
         }
+        if (block.type === 'ol') {
+          return (
+            <ol key={i} className="jd-list" start={block.start > 1 ? block.start : undefined}>
+              {block.items.map((item, j) => (
+                <li key={j}>{item}</li>
+              ))}
+            </ol>
+          );
+        }
         if (block.type === 'hr') {
           return <hr key={i} className="jd-hr" />;
         }
         return (
-          <p key={i} className="jd-p">
+          <p key={i} className="jd-p" style={{ whiteSpace: 'pre-line' }}>
             {block.text}
           </p>
         );
