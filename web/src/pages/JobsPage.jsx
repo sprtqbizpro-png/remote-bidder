@@ -62,6 +62,8 @@ function buildPageItems(current, total) {
   return items;
 }
 
+const JOBS_POLL_MS = 15000;
+
 export default function JobsPage() {
   const user = getStoredUser();
   const canRemoveJobs = !!user?.isOwner;
@@ -71,21 +73,40 @@ export default function JobsPage() {
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState('applied');
   const [page, setPage] = useState(1);
+  const [lastSyncedAt, setLastSyncedAt] = useState(null);
+
+  async function loadJobs({ quiet = false } = {}) {
+    try {
+      const data = await api.listJobs();
+      setJobs(Array.isArray(data) ? data : []);
+      setError('');
+      setLastSyncedAt(new Date());
+    } catch (err) {
+      if (!quiet) setError(err.message);
+    } finally {
+      if (!quiet) setLoading(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      try {
-        const data = await api.listJobs();
-        if (!cancelled) setJobs(data);
-      } catch (err) {
-        if (!cancelled) setError(err.message);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+      if (cancelled) return;
+      await loadJobs({ quiet: false });
     })();
+
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      loadJobs({ quiet: true });
+    }, JOBS_POLL_MS);
+
+    const onFocus = () => loadJobs({ quiet: true });
+    window.addEventListener('focus', onFocus);
+
     return () => {
       cancelled = true;
+      clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
     };
   }, []);
 
@@ -158,6 +179,11 @@ export default function JobsPage() {
               Recommended
             </button>
           </div>
+          {lastSyncedAt ? (
+            <p className="jr-jobs-sync-meta" aria-live="polite">
+              Updated {formatRelative(lastSyncedAt.toISOString())} · auto-refreshes every 15s
+            </p>
+          ) : null}
         </div>
         <div className="jr-page-search">
           <input

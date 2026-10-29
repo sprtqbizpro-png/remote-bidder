@@ -3447,7 +3447,7 @@
       if (lastResumeDataUrl || lastResumeLink) steps.resume = true;
       updateSteps();
 
-      await notifyAppliedSaved(info);
+      // Chrome notification + chime are fired by the background SAVE_APPLIED_JOB handler.
 
       await send('CLEAR_DRAFT_JOB');
       // Clear resume + job description after a successful save

@@ -73,12 +73,146 @@ async function apiJson(path, { method = 'GET', body } = {}) {
   return data;
 }
 
+const JOBS_POLL_ALARM = 'ks-jobs-poll';
+const JOBS_POLL_MINUTES = 0.5; // ~30s
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   handleMessage(message, sender)
     .then(sendResponse)
     .catch((err) => sendResponse({ ok: false, error: err.message }));
   return true;
 });
+
+async function ensureOffscreenDocument() {
+  try {
+    if (chrome.runtime.getContexts) {
+      const contexts = await chrome.runtime.getContexts({
+        contextTypes: ['OFFSCREEN_DOCUMENT'],
+      });
+      if (contexts?.length) return;
+    }
+  } catch {
+    /* older Chrome */
+  }
+  try {
+    await chrome.offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: ['AUDIO_PLAYBACK'],
+      justification: 'Play a chime when an applied job is saved',
+    });
+  } catch (err) {
+    // Already open or unsupported
+    if (!/already exists|Only a single offscreen/i.test(String(err?.message || err))) {
+      console.warn('Offscreen document failed', err);
+    }
+  }
+}
+
+async function playSaveSound() {
+  try {
+    await ensureOffscreenDocument();
+    await chrome.runtime.sendMessage({ type: 'OFFSCREEN_PLAY_SAVE_SOUND' });
+  } catch (err) {
+    console.warn('Save sound failed', err);
+  }
+}
+
+async function notifyAppliedJobSaved({ companyName, roleName, playSound = true } = {}) {
+  const company = companyName || 'Company';
+  const role = roleName || 'Role';
+  const id = `ks-applied-${Date.now()}`;
+  try {
+    await chrome.notifications.create(id, {
+      type: 'basic',
+      iconUrl: 'icons/icon128.png',
+      title: 'King Star — Application saved',
+      message: `${role} at ${company} was added to Applied jobs.`,
+      priority: 2,
+      requireInteraction: false,
+      silent: false,
+    });
+    setTimeout(() => {
+      chrome.notifications.clear(id).catch(() => {});
+    }, 10000);
+  } catch (err) {
+    console.warn('Notification failed', err);
+  }
+  if (playSound) await playSaveSound();
+  return { ok: true };
+}
+
+async function syncKnownJobIds(jobs) {
+  const ids = (Array.isArray(jobs) ? jobs : []).map((j) => j.id).filter(Boolean);
+  await chrome.storage.local.set({
+    hsKnownJobIds: ids,
+    hsKnownJobsSyncedAt: Date.now(),
+  });
+  return ids;
+}
+
+async function pollAppliedJobsForNotifications() {
+  const token = await getAuthToken();
+  if (!token) return;
+  try {
+    const api = await getApiBase();
+    const res = await fetch(`${api}/api/jobs`, { headers: await authHeaders() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return;
+    const jobs = Array.isArray(data) ? data : [];
+    const { hsKnownJobIds, hsJobsPollInitialized } = await chrome.storage.local.get({
+      hsKnownJobIds: [],
+      hsJobsPollInitialized: false,
+    });
+    const known = new Set(hsKnownJobIds || []);
+    if (!hsJobsPollInitialized) {
+      // First run: seed without notifying for historical jobs.
+      await chrome.storage.local.set({ hsJobsPollInitialized: true });
+      await syncKnownJobIds(jobs);
+      return;
+    }
+    const newcomers = jobs.filter((j) => j?.id && !known.has(j.id));
+    await syncKnownJobIds(jobs);
+    // Newest first; notify at most a few to avoid spam
+    for (const job of newcomers.slice(0, 3)) {
+      await notifyAppliedJobSaved({
+        companyName: job.companyName,
+        roleName: job.roleName,
+        playSound: true,
+      });
+    }
+  } catch (err) {
+    console.warn('Jobs poll failed', err);
+  }
+}
+
+async function ensureJobsPollAlarm() {
+  try {
+    const existing = await chrome.alarms.get(JOBS_POLL_ALARM);
+    if (!existing) {
+      await chrome.alarms.create(JOBS_POLL_ALARM, {
+        periodInMinutes: JOBS_POLL_MINUTES,
+      });
+    }
+  } catch (err) {
+    console.warn('Jobs poll alarm failed', err);
+  }
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm?.name === JOBS_POLL_ALARM) {
+    pollAppliedJobsForNotifications().catch(() => {});
+  }
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  ensureJobsPollAlarm();
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  ensureJobsPollAlarm();
+});
+
+ensureJobsPollAlarm();
 
 async function handleMessage(message, sender = {}) {
   const api = await getApiBase();
@@ -316,31 +450,35 @@ async function handleMessage(message, sender = {}) {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Save job failed');
+
+      // Track locally so the poller doesn't re-notify this save.
+      try {
+        const { hsKnownJobIds } = await chrome.storage.local.get({ hsKnownJobIds: [] });
+        const next = Array.from(new Set([...(hsKnownJobIds || []), data?.id].filter(Boolean)));
+        await chrome.storage.local.set({
+          hsKnownJobIds: next,
+          hsJobsPollInitialized: true,
+        });
+      } catch {
+        /* ignore */
+      }
+
+      // Always fire system notification + chime when a job is persisted.
+      await notifyAppliedJobSaved({
+        companyName: data?.companyName || message.payload?.companyName,
+        roleName: data?.roleName || message.payload?.roleName,
+        playSound: true,
+      });
+
       return { ok: true, data };
     }
 
     case 'NOTIFY_APPLIED_SAVED': {
-      const company = message.payload?.companyName || 'Company';
-      const role = message.payload?.roleName || 'Role';
-      const id = `ks-applied-${Date.now()}`;
-      try {
-        await chrome.notifications.create(id, {
-          type: 'basic',
-          iconUrl: 'icons/icon128.png',
-          title: 'King Star — Application saved',
-          message: `${role} at ${company} was added to Applied jobs.`,
-          priority: 2,
-          requireInteraction: false,
-          silent: false,
-        });
-        // Auto-clear after a bit so the tray doesn’t fill up
-        setTimeout(() => {
-          chrome.notifications.clear(id).catch(() => {});
-        }, 8000);
-      } catch (err) {
-        console.warn('Notification failed', err);
-      }
-      return { ok: true };
+      return notifyAppliedJobSaved({
+        companyName: message.payload?.companyName,
+        roleName: message.payload?.roleName,
+        playSound: message.payload?.playSound !== false,
+      });
     }
 
     case 'HEALTH': {

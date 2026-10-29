@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import db from '../db.js';
+import db, { flushDb } from '../db.js';
 import { structureJobDescription } from '../cleanDescription.js';
 import {
   isDriveConnected,
@@ -122,6 +122,9 @@ router.post('/', async (req, res) => {
     created_by_name: user.name || user.email,
   });
 
+  // Persist before responding so other serverless instances (and the web list) see it.
+  await flushDb();
+
   const mapped = mapJob(row);
   if (driveWarning) mapped.driveWarning = driveWarning;
   if (!isDriveConnected()) {
@@ -133,12 +136,13 @@ router.post('/', async (req, res) => {
   res.status(201).json(mapped);
 });
 
-router.delete('/:id', (req, res) => {
+router.delete('/:id', async (req, res) => {
   // Only the owner can remove applied jobs; members can view the shared list.
   if (!requireOwner(req, res)) return;
   if (!db.deleteJob(req.params.id)) {
     return res.status(404).json({ error: 'Job not found' });
   }
+  await flushDb();
   res.json({ ok: true });
 });
 

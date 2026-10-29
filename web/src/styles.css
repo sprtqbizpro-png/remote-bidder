@@ -3865,6 +3865,12 @@ main {
   color: var(--danger);
 }
 
+.jr-jobs-sync-meta {
+  margin: 0.35rem 0 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
 .jr-members-lede {
   margin: 0.35rem 0 0;
   color: var(--muted);

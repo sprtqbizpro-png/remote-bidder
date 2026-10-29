@@ -139,26 +139,80 @@ function read() {
   return state;
 }
 
+function mergeById(localList, remoteList, idKey = 'id') {
+  const map = new Map();
+  for (const row of remoteList || []) {
+    if (row?.[idKey] != null) map.set(row[idKey], row);
+  }
+  for (const row of localList || []) {
+    if (row?.[idKey] == null) continue;
+    const prev = map.get(row[idKey]);
+    // Prefer the locally mutated row when both exist (this request's write).
+    map.set(row[idKey], prev ? { ...prev, ...row } : row);
+  }
+  return [...map.values()];
+}
+
+function mergeStoreBlobs(local, remote) {
+  const baseRemote = { ...structuredClone(DEFAULT), ...(remote || {}) };
+  const baseLocal = { ...structuredClone(DEFAULT), ...(local || {}) };
+
+  const sessions = mergeById(
+    (baseLocal.sessions || []).filter((s) => s?.token && s.expiresAt > Date.now()),
+    (baseRemote.sessions || []).filter((s) => s?.token && s.expiresAt > Date.now()),
+    'token'
+  );
+
+  const applied_jobs = mergeById(baseLocal.applied_jobs, baseRemote.applied_jobs, 'id').sort(
+    (a, b) => String(b.applied_at || '').localeCompare(String(a.applied_at || ''))
+  );
+
+  const users = mergeById(baseLocal.users, baseRemote.users, 'id');
+  const fixed_answers = mergeById(baseLocal.fixed_answers, baseRemote.fixed_answers, 'id');
+
+  const profiles = {
+    ...(baseRemote.profiles || {}),
+    ...(baseLocal.profiles || {}),
+  };
+
+  // Prefer local settings / google tokens when this request changed them;
+  // otherwise keep remote so we don't wipe Drive tokens from another instance.
+  const settings = {
+    ...(baseRemote.settings || {}),
+    ...(baseLocal.settings || {}),
+  };
+  const google_tokens = baseLocal.google_tokens ?? baseRemote.google_tokens ?? null;
+
+  return {
+    applied_jobs,
+    fixed_answers,
+    settings,
+    google_tokens,
+    users,
+    sessions,
+    profiles,
+  };
+}
+
 async function persistMerged(snapshot) {
   if (!persistFn) return;
   let toSave = structuredClone(snapshot);
-  // Union sessions with the latest durable blob so concurrent instances
-  // don't clobber each other's auth tokens on last-write-wins.
   if (loadFn) {
     try {
       const remote = await loadFn();
-      const byToken = new Map();
-      for (const s of remote?.sessions || []) {
-        if (s?.token && s.expiresAt > Date.now()) byToken.set(s.token, s);
+      toSave = mergeStoreBlobs(toSave, remote);
+      // Keep in-memory store aligned with what we persist.
+      if (state) {
+        state.sessions = toSave.sessions;
+        state.applied_jobs = toSave.applied_jobs;
+        state.users = toSave.users;
+        state.fixed_answers = toSave.fixed_answers;
+        state.profiles = toSave.profiles;
+        state.settings = toSave.settings;
+        if (toSave.google_tokens) state.google_tokens = toSave.google_tokens;
       }
-      for (const s of toSave.sessions || []) {
-        if (s?.token && s.expiresAt > Date.now()) byToken.set(s.token, s);
-      }
-      toSave = { ...toSave, sessions: [...byToken.values()] };
-      // Keep in-memory sessions in sync with what we persist.
-      if (state) state.sessions = toSave.sessions;
     } catch (err) {
-      console.warn('[db] session merge before save skipped:', err?.message || err);
+      console.warn('[db] merge before save skipped:', err?.message || err);
     }
   }
   await persistFn(toSave);
@@ -181,22 +235,11 @@ function nowIso() {
 }
 
 /**
- * Merge durable store with in-memory sessions so a just-created token
- * is not lost when another instance already persisted a newer blob.
+ * Merge durable store with in-memory mutations so jobs/sessions created
+ * on this instance are not lost when reloading another instance's blob.
  */
 function mergeLoadedState(local, remote) {
-  const base = { ...structuredClone(DEFAULT), ...(remote || {}) };
-  const byToken = new Map();
-  for (const s of base.sessions || []) {
-    if (s?.token && s.expiresAt > Date.now()) byToken.set(s.token, s);
-  }
-  for (const s of local?.sessions || []) {
-    if (s?.token && s.expiresAt > Date.now() && !byToken.has(s.token)) {
-      byToken.set(s.token, s);
-    }
-  }
-  base.sessions = [...byToken.values()];
-  return base;
+  return mergeStoreBlobs(local, remote);
 }
 
 /**
