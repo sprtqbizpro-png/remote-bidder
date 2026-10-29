@@ -2197,9 +2197,12 @@
           const keepLocalDesc = !forceLlm && (local.descriptionScore || 0) >= 250;
           // A company confirmed in the visible job header beats the model (which can pick the board's brand)
           const keepLocalCompany = !!local.companyName && (local.companyScore || 0) >= 60;
+          // Same for a title confirmed by several page signals (heading + page title + structured data)
+          const keepLocalRole = !!local.roleName && (local.roleScore || 0) >= 70;
           finalInfo = {
             ...ai,
             companyName: keepLocalCompany ? local.companyName : ai.companyName || local.companyName,
+            roleName: keepLocalRole ? local.roleName : ai.roleName || local.roleName,
             jobDescription: keepLocalDesc ? local.jobDescription : ai.jobDescription || local.jobDescription,
             resumeDriveLink: lastResumeLink,
             resumeDriveFileId: lastResumeFileId,

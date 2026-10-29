@@ -280,6 +280,10 @@
   const COMPANY_NOISE =
     /[$€£]|\b\d+\s*(k|applicants?|employees|days?|hours?|weeks?|months?)\b|\bago\b|\b(posted|apply|save|share|match|salary|remote|hybrid|on-?site|full[- ]?time|part[- ]?time|contract|internship|united states|usa|h-?1b|sponsor|view (all )?jobs|similar|recommended)\b/i;
 
+  /** "Austin, TX", "Berlin, Germany", "London, United Kingdom" — header location lines, not employers. */
+  const LOCATION_LIKE =
+    /^[A-Z][A-Za-z .'-]+,\s*([A-Z]{2}|united states|usa|canada|united kingdom|uk|germany|france|india|ireland|netherlands|spain|australia|singapore|japan|brazil|mexico|poland)(,\s*(usa|us|united states))?$/i;
+
   function cleanCompanyName(raw) {
     let s = String(raw || '')
       .replace(/\s+/g, ' ')
@@ -290,7 +294,7 @@
       .replace(/\s+\d(\.\d)?\s*★.*$/, '')
       .trim();
     if (s.length < 2 || s.length > 80 || s.split(' ').length > 8) return '';
-    if (isBadRoleTitle(s) || COMPANY_NOISE.test(s)) return '';
+    if (isBadRoleTitle(s) || COMPANY_NOISE.test(s) || LOCATION_LIKE.test(s)) return '';
     return s;
   }
 
@@ -367,7 +371,10 @@
         titleEl.parentElement?.previousElementSibling,
         titleEl.parentElement?.nextElementSibling,
       ]) {
-        if (sib && !inTitle(sib)) {
+        const sibLabel = sib
+          ? `${sib.getAttribute('class') || ''} ${sib.id || ''} ${sib.getAttribute('data-automation-id') || ''} ${sib.getAttribute('data-testid') || ''}`
+          : '';
+        if (sib && !inTitle(sib) && !/locat|salary|date|posted|category|department/i.test(sibLabel)) {
           const t = textOf(sib);
           if (t.length <= 60) add(t, 25, 'near:sibling');
         }
@@ -415,6 +422,94 @@
    * When the description container also wraps the job header, drop the title line plus the short
    * meta lines around it (company · location · salary · "2 hours ago") — they are not the posting body.
    */
+  // ─── Job title resolution ──────────────────────────────────
+  const ROLE_WORDS =
+    /\b(engineer|engineering|developer|manager|director|designer|analyst|scientist|architect|specialist|consultant|lead|head|intern|internship|associate|coordinator|administrator|officer|representative|technician|recruiter|writer|editor|accountant|nurse|assistant|executive|vp|president|strategist|researcher|programmer|counsel|attorney|advisor|partner|principal|staff|senior|junior|sr|jr|devops|sre|qa|sales|marketing|support|operations)\b/i;
+  const NOT_ROLE_RE =
+    /\b(careers?(\s+(at|page|site|home))?|jobs?\s+at|job\s+search|search\s+(all\s+)?jobs|all\s+jobs|open\s+(positions|roles)|join\s+(our|the)\s+team|current\s+openings|similar\s+jobs|recommended\s+jobs|create\s+(a\s+)?job\s+alert|sign\s+in|log\s+in)\b/i;
+
+  function cleanRoleTitle(raw) {
+    const s = String(raw || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^(job\s*title|position|role)\s*[:-]\s*/i, '')
+      .trim();
+    if (s.length < 3 || s.length > 150) return '';
+    if (isBadRoleTitle(s) || isBoardBrand(s) || NOT_ROLE_RE.test(s)) return '';
+    // Sentences are not titles
+    if (/[.!?]$/.test(s) && s.split(' ').length > 6) return '';
+    return s;
+  }
+
+  /**
+   * Score title candidates from structured data, ATS selectors, headings and the page title.
+   * Agreement with document.title / og:title and job-title vocabulary decide between e.g.
+   * <h1>Acme</h1> (company banner) and <h2>Senior Backend Engineer</h2>.
+   */
+  function resolveRole({ jsonLd, atsResult, embeddedTitles = [] }) {
+    const cands = new Map();
+    const add = (raw, prior, src) => {
+      const title = cleanRoleTitle(raw);
+      const key = normName(title);
+      if (!key) return;
+      const c = cands.get(key) || { title, prior: 0, sources: new Set() };
+      c.prior = Math.max(c.prior, prior);
+      c.sources.add(src);
+      cands.set(key, c);
+    };
+
+    if (jsonLd?.roleName) add(jsonLd.roleName, 60, 'json-ld');
+    embeddedTitles.forEach((t) => add(t, 50, 'embedded'));
+    if (atsResult?.roleName) add(atsResult.roleName, 50, 'ats');
+
+    const scope = jobScope();
+    const take = (sel, prior, src, limit) => {
+      let n = 0;
+      let nodes = [];
+      try {
+        nodes = scope.querySelectorAll(sel);
+      } catch {
+        return;
+      }
+      for (const el of nodes) {
+        if (n >= limit) break;
+        if (el.closest('nav, footer, aside, [role="navigation"]') || !isVisibleEl(el)) continue;
+        add(textOf(el), prior, src);
+        n++;
+      }
+    };
+    take(
+      '[data-testid*="job-title" i], [data-automation-id="jobPostingHeader"], [class*="job-title" i], [class*="jobTitle" i], [class*="posting-title" i], [itemprop="title"]',
+      45,
+      'class',
+      3
+    );
+    take('h1', 38, 'h1', 2);
+    take('h2', 22, 'h2', 3);
+
+    const pageTitles = [document.title, metaContent('og:title'), metaContent('twitter:title')].filter(Boolean);
+    for (const t of pageTitles) {
+      // "Role - Company | Board", "Role at Company", "Company hiring Role in City"
+      add(t.split(/\s+(?:[|–—·•]|-|at|@)\s+/i)[0], 20, 'title');
+      const hiring = t.match(/\bhiring\s+(?:an?\s+)?(.+?)(?:\s+in\s+|\s+[|–—-]\s+|$)/i);
+      if (hiring) add(hiring[1], 20, 'title');
+    }
+
+    const titleText = normName(pageTitles.join(' | '));
+    const siteName = normName(metaContent('og:site_name'));
+    let best = { title: '', score: 0 };
+    cands.forEach((c, key) => {
+      let score = c.prior + 8 * (c.sources.size - 1);
+      if (containsName(titleText, key)) score += 25;
+      if (ROLE_WORDS.test(c.title)) score += 15;
+      else if (c.title.split(' ').length <= 3) score -= 10; // short non-title text: often a company/banner
+      if (siteName && key === siteName) score -= 40;
+      if (c.title.length > 100) score -= 30;
+      if (score > best.score) best = { title: c.title, score };
+    });
+    return best;
+  }
+
   function stripHeaderPreamble(text, role) {
     const target = normName(role);
     if (!text || !target) return text;
@@ -488,26 +583,37 @@
     return el?.content?.trim() || '';
   }
 
+  /** Host → ATS / job board. Matched on the hostname only (query strings like utm_source=greenhouse lie). */
+  const ATS_HOSTS = [
+    ['taleo', /(^|\.)taleo\.net$/],
+    ['greenhouse', /(^|\.)greenhouse\.io$/],
+    ['lever', /(^|\.)lever\.co$/],
+    ['ashby', /(^|\.)ashbyhq\.com$/],
+    ['workday', /(^|\.)(myworkdayjobs|myworkdaysite|workday)\.com$/],
+    ['smartrecruiters', /(^|\.)smartrecruiters\.com$/],
+    ['workable', /(^|\.)workable\.com$/],
+    ['jobvite', /(^|\.)jobvite\.com$/],
+    ['breezy', /(^|\.)breezy\.hr$/],
+    ['linkedin', /(^|\.)linkedin\.com$/],
+    ['indeed', /(^|\.)indeed\.[a-z.]+$/],
+    ['glassdoor', /(^|\.)glassdoor\.[a-z.]+$/],
+    ['ziprecruiter', /(^|\.)ziprecruiter\.[a-z.]+$/],
+    ['dice', /(^|\.)dice\.com$/],
+  ];
+
   function detectAts() {
     const host = location.hostname.toLowerCase();
-    const href = location.href.toLowerCase();
-    if (host.includes('taleo.net') || href.includes('taleo') || href.includes('careersection')) {
+    const hit = ATS_HOSTS.find(([, re]) => re.test(host));
+    if (hit) return hit[0];
+    // Embedded / custom-domain boards: recognize by DOM signature
+    if (document.querySelector('[id*="requisitionDescriptionInterface"]') || /careersection/i.test(location.pathname)) {
       return 'taleo';
     }
-    if (document.querySelector('#requisitionDescriptionInterface, .editablesection, .contentlinepanel')) {
-      if (host.includes('taleo') || document.querySelector('[id*="requisitionDescriptionInterface"]')) {
-        return 'taleo';
-      }
-    }
-    if (host.includes('greenhouse') || href.includes('greenhouse')) return 'greenhouse';
-    if (host.includes('lever.co') || href.includes('jobs.lever.co')) return 'lever';
-    if (host.includes('ashbyhq') || href.includes('ashby')) return 'ashby';
-    if (host.includes('myworkdayjobs') || host.includes('workday')) return 'workday';
-    if (host.includes('linkedin')) return 'linkedin';
-    if (host.includes('indeed')) return 'indeed';
-    if (document.querySelector('.ashby-job-posting-heading, [class*="ashby"]')) return 'ashby';
-    if (document.querySelector('#content .app-title, #application_form')) return 'greenhouse';
+    if (document.querySelector('.ashby-job-posting-heading, [class*="ashby-job-posting"]')) return 'ashby';
+    if (document.querySelector('#content .app-title, #application_form, .job__title, #grnhse_app')) return 'greenhouse';
     if (document.querySelector('.posting-headline, .postings-wrapper')) return 'lever';
+    if (document.querySelector('[data-automation-id="jobPostingHeader"]')) return 'workday';
+    if (document.querySelector('[data-ui="job-title"]')) return 'workable';
     return 'generic';
   }
 
@@ -713,30 +819,101 @@
       greenhouse: {
         role: ['h1.app-title', 'h1', '.app-title'],
         company: ['.company-name', '#header .company-name', '[data-company-name]'],
-        desc: ['#content .section-wrapper', '#content', '.content', '#job_description'],
+        desc: [
+          '.job__description',
+          '#content .job-post-content',
+          '#content .section-wrapper',
+          '#job_description',
+          '#content',
+        ],
       },
       lever: {
-        role: ['.posting-headline h2', 'h2', 'h1'],
+        role: ['.posting-headline h2', '[data-qa="posting-name"]', 'h2', 'h1'],
         company: ['.main-header-logo img[alt]', '.posting-headline .company', '.company-name'],
-        desc: ['.posting .content', '.section-wrapper', '.posting-page .content'],
+        // Lever splits the posting: intro, one section per list, closing text
+        sections: [
+          '[data-qa="job-description"]',
+          '.posting-page .section.page-centered:not(.posting-header):not([data-qa="btn-apply-bottom"])',
+          '[data-qa="closing-description"]',
+        ],
+        desc: ['.posting .content', '.posting-page .content'],
       },
       ashby: {
-        role: ['.ashby-job-posting-heading h1', 'h1'],
-        company: ['.ashby-job-posting-company-name', '[class*="company"]'],
-        desc: ['.ashby-job-posting-section', '[class*="job-posting"]'],
+        role: ['.ashby-job-posting-heading', 'h1'],
+        company: ['.ashby-job-posting-company-name'],
+        sections: ['[class*="_descriptionText"]', '.ashby-job-posting-section'],
+        desc: ['[class*="job-posting-right-pane"]'],
+      },
+      workable: {
+        role: ['[data-ui="job-title"]', 'h1'],
+        company: ['[data-ui="company-name"]'],
+        sections: ['[data-ui="job-description"]', '[data-ui="job-requirements"]', '[data-ui="job-benefits"]'],
+        desc: ['[data-ui="job-description"]'],
+      },
+      smartrecruiters: {
+        role: ['h1.job-title', '[itemprop="title"]', 'h1'],
+        company: ['[itemprop="hiringOrganization"] [itemprop="name"]', '.company-name'],
+        desc: ['[itemprop="description"]', '.job-sections', '.job-description'],
+      },
+      jobvite: {
+        role: ['.jv-header', 'h2.jv-header', 'h1'],
+        company: ['.jv-company-name'],
+        desc: ['.jv-job-detail-description', '.jv-wrapper'],
+      },
+      breezy: {
+        role: ['.position-header h1', 'h1'],
+        company: ['.company-name', '.brand-name'],
+        desc: ['.description', '.position-description'],
       },
       indeed: {
-        role: ['.jobsearch-JobInfoHeader-title', 'h1'],
-        company: ['.jobsearch-InlineCompanyRating a', '[data-company-name]', '.jobsearch-CompanyInfoContainer a'],
+        role: ['[data-testid="jobsearch-JobInfoHeader-title"]', '.jobsearch-JobInfoHeader-title', 'h1'],
+        company: [
+          '[data-testid="inlineHeader-companyName"]',
+          '[data-company-name="true"]',
+          '.jobsearch-InlineCompanyRating a',
+          '.jobsearch-CompanyInfoContainer a',
+        ],
         desc: ['#jobDescriptionText', '.jobsearch-jobDescriptionText'],
       },
       linkedin: {
-        role: ['.job-details-jobs-unified-top-card__job-title', 'h1'],
-        company: ['.job-details-jobs-unified-top-card__company-name a', '.topcard__org-name-link'],
-        desc: ['#job-details', '.jobs-description__content', '.jobs-box__html-content'],
+        role: [
+          '.job-details-jobs-unified-top-card__job-title',
+          '.jobs-unified-top-card__job-title',
+          '.top-card-layout__title',
+          'h1.topcard__title',
+          'h1',
+        ],
+        company: [
+          '.job-details-jobs-unified-top-card__company-name a',
+          '.job-details-jobs-unified-top-card__company-name',
+          '.jobs-unified-top-card__company-name a',
+          '.topcard__org-name-link',
+        ],
+        desc: [
+          '#job-details',
+          '.jobs-description__content',
+          '.jobs-box__html-content',
+          '.show-more-less-html__markup',
+          '.description__text',
+        ],
+      },
+      glassdoor: {
+        role: ['[data-test="job-title"]', 'h1[id^="jd-job-title"]', 'h1'],
+        company: ['[data-test="employer-name"]', '[class*="EmployerProfile_employerName"]'],
+        desc: ['[class*="JobDetails_jobDescription"]', '#JobDescriptionContainer', '.jobDescriptionContent'],
+      },
+      ziprecruiter: {
+        role: ['h1.job_title', '[class*="job_title"]', 'h1'],
+        company: ['.hiring_company_text a', 'a.hiring_company', '[class*="company_name"]'],
+        desc: ['.job_description', '.jobDescriptionSection', '[class*="job_description"]'],
+      },
+      dice: {
+        role: ['h1[data-cy="jobTitle"]', 'h1'],
+        company: ['[data-cy="companyNameLink"]', '[data-cy="companyName"]'],
+        desc: ['[data-testid="jobDescriptionHtml"]', '#jobDescription'],
       },
       workday: {
-        role: ['h2[data-automation-id="jobPostingHeader"]', 'h1'],
+        role: ['h2[data-automation-id="jobPostingHeader"]', '[data-automation-id="jobPostingHeader"]', 'h1'],
         company: ['[data-automation-id="company"]', '[data-automation-id="jobPostingCompanyName"]'],
         desc: ['[data-automation-id="jobPostingDescription"]'],
       },
@@ -773,17 +950,27 @@
       firstMatch(cfg.company) || cfg._companyFromAlt || companyFromLogo() || companyFromHost();
 
     let jobDescription = '';
-    if (ats === 'ashby') {
-      const sections = document.querySelectorAll(cfg.desc.join(','));
-      const parts = [];
-      sections.forEach((el) => {
-        const t = serializeElement(el);
-        if (t && scoreDescription(t) >= 30) parts.push(t);
-      });
-      jobDescription = cleanStructuredText(parts.join('\n\n'));
-    } else {
+    if (cfg.sections) {
+      // Top-level matches only, in page order — nested matches would duplicate text
+      let found = [];
+      try {
+        found = Array.from(document.querySelectorAll(cfg.sections.join(',')));
+      } catch {
+        /* ignore */
+      }
+      const top = found.filter((el) => !found.some((o) => o !== el && o.contains(el)));
+      const parts = top.map((el) => serializeElement(el)).filter((t) => t && t.length >= 20);
+      const joined = cleanStructuredText(parts.join('\n\n'));
+      if (scoreDescription(joined) >= 80) jobDescription = joined;
+    }
+    if (!jobDescription) {
       for (const sel of cfg.desc) {
-        const el = document.querySelector(sel);
+        let el = null;
+        try {
+          el = document.querySelector(sel);
+        } catch {
+          /* ignore */
+        }
         if (!el) continue;
         const t = serializeElement(el);
         if (scoreDescription(t) >= 80) {
@@ -1430,22 +1617,26 @@
     result.pageTitle = document.title;
     result.ats = ats;
 
-    // Fix common swaps / section-header titles / board brand as title
-    if (isBadRoleTitle(result.roleName) || isBoardBrand(result.roleName)) {
-      result.roleName =
-        (atsResult && !isBadRoleTitle(atsResult.roleName) && atsResult.roleName) ||
-        extractRoleGeneric() ||
-        '';
-    }
-
-    let embeddedJob = null;
+    let embeddedJobs = [];
     try {
-      const jobs = findEmbeddedJobs().filter((j) => shownOnPage(j.title));
-      embeddedJob =
-        jobs.find((j) => titleMatches(j.title, result.roleName)) || (!result.roleName ? jobs[0] : null) || null;
+      embeddedJobs = findEmbeddedJobs().filter((j) => shownOnPage(j.title));
     } catch {
       /* ignore */
     }
+
+    // ── Job title: scored across structured data, ATS selectors, headings and the page title
+    const role = resolveRole({ jsonLd, atsResult, embeddedTitles: embeddedJobs.map((j) => j.title) });
+    if (role.title) {
+      result.roleName = role.title;
+    } else if (isBadRoleTitle(result.roleName) || isBoardBrand(result.roleName)) {
+      result.roleName = extractRoleGeneric() || '';
+    }
+    result.roleScore = role.score;
+
+    const embeddedJob =
+      embeddedJobs.find((j) => titleMatches(j.title, result.roleName)) ||
+      (!result.roleName ? embeddedJobs[0] : null) ||
+      null;
     if (!result.roleName && embeddedJob) result.roleName = embeddedJob.title;
 
     // ── Company: scored across all sources, validated against the visible job header
@@ -1486,7 +1677,7 @@
     }
     result.confidence = scoreResult(result);
     result.descriptionScore = scoreDescription(result.jobDescription || '');
-    result.needsLlm = result.confidence < CONFIDENCE_OK || company.score < 45;
+    result.needsLlm = result.confidence < CONFIDENCE_OK || company.score < 45 || role.score < 45;
     return result;
   };
 
