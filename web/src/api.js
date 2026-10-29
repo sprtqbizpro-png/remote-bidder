@@ -69,4 +69,20 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+
+  listMembers: () => request('/api/members'),
+  createMember: (payload) =>
+    request('/api/members', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateMember: (id, payload) =>
+    request(`/api/members/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  deleteMember: (id) =>
+    request(`/api/members/${id}`, {
+      method: 'DELETE',
+    }),
 };

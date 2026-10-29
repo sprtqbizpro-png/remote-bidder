@@ -343,18 +343,48 @@ export const db = {
     return read().users.find((u) => u.id === id) || null;
   },
 
-  createUser({ id, email, passwordHash, name }) {
+  listUsers() {
+    return read()
+      .users.slice()
+      .sort((a, b) => String(a.email).localeCompare(String(b.email)));
+  },
+
+  createUser({ id, email, passwordHash, name, role = 'member' }) {
     const data = read();
     const row = {
       id,
       email: String(email).trim().toLowerCase(),
       passwordHash,
       name: String(name || '').trim(),
+      role: role === 'owner' ? 'owner' : 'member',
       created_at: nowIso(),
     };
     data.users.push(row);
     write(data);
-    return { id: row.id, email: row.email, name: row.name, created_at: row.created_at };
+    return row;
+  },
+
+  updateUser(id, patch) {
+    const data = read();
+    const idx = data.users.findIndex((u) => u.id === id);
+    if (idx < 0) return null;
+    const next = { ...data.users[idx], ...patch };
+    if (patch.email !== undefined) next.email = String(patch.email).trim().toLowerCase();
+    if (patch.name !== undefined) next.name = String(patch.name || '').trim();
+    if (patch.role !== undefined) next.role = patch.role === 'owner' ? 'owner' : 'member';
+    data.users[idx] = next;
+    write(data);
+    return next;
+  },
+
+  deleteUser(id) {
+    const data = read();
+    const before = data.users.length;
+    data.users = data.users.filter((u) => u.id !== id);
+    data.sessions = data.sessions.filter((s) => s.userId !== id);
+    if (data.profiles?.[id]) delete data.profiles[id];
+    write(data);
+    return before !== data.users.length;
   },
 
   createSession({ token, userId, expiresAt }) {

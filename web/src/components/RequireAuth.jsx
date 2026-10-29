@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import { api } from '../api.js';
-import { clearSession, getToken } from '../auth.js';
+import { clearSession, getToken, setSession } from '../auth.js';
 
 export default function RequireAuth() {
   const location = useLocation();
@@ -17,7 +17,8 @@ export default function RequireAuth() {
     setStatus('checking');
     (async () => {
       try {
-        await api.me();
+        const me = await api.me();
+        if (me?.user) setSession({ token, user: me.user });
         if (!cancelled) setStatus('authed');
       } catch {
         clearSession();

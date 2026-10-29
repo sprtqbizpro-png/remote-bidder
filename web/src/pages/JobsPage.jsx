@@ -90,7 +90,13 @@ export default function JobsPage() {
     const q = query.trim().toLowerCase();
     if (!q) return jobs;
     return jobs.filter((job) =>
-      [job.companyName, job.roleName, job.jobDescription]
+      [
+        job.companyName,
+        job.roleName,
+        job.jobDescription,
+        job.createdBy?.name,
+        job.createdBy?.email,
+      ]
         .filter(Boolean)
         .some((v) => v.toLowerCase().includes(q))
     );
@@ -205,6 +211,7 @@ export default function JobsPage() {
               <thead>
                 <tr>
                   <th scope="col">Role</th>
+                  <th scope="col">Created by</th>
                   <th scope="col">Applied</th>
                   <th scope="col">Status</th>
                   <th scope="col" className="jr-th-actions">
@@ -228,6 +235,16 @@ export default function JobsPage() {
                             </Link>
                             <span className="jr-table-company">{job.companyName}</span>
                           </div>
+                        </div>
+                      </td>
+                      <td className="jr-td-created-by">
+                        <div className="jr-created-by">
+                          <span className="jr-created-by-name">
+                            {job.createdBy?.name || job.createdBy?.email || '—'}
+                          </span>
+                          {job.createdBy?.email && job.createdBy?.name ? (
+                            <span className="jr-created-by-email">{job.createdBy.email}</span>
+                          ) : null}
                         </div>
                       </td>
                       <td className="jr-td-date">

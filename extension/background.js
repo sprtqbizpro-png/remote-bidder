@@ -254,8 +254,10 @@ async function handleMessage(message, sender = {}) {
     }
 
     case 'LIST_APPLIED_JOBS': {
-      const res = await fetch(`${api}/api/jobs`);
-      const data = await res.json();
+      const res = await fetch(`${api}/api/jobs`, {
+        headers: await authHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'List jobs failed');
       return { ok: true, data: Array.isArray(data) ? data : [] };
     }
@@ -263,10 +265,10 @@ async function handleMessage(message, sender = {}) {
     case 'SAVE_APPLIED_JOB': {
       const res = await fetch(`${api}/api/jobs`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(message.payload),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Save job failed');
       return { ok: true, data };
     }

@@ -169,6 +169,11 @@ export default function JobDetailPage() {
               {job.appliedAt && (
                 <span className="jr-detail-chip">Applied {formatDate(job.appliedAt)}</span>
               )}
+              {(job.createdBy?.name || job.createdBy?.email) && (
+                <span className="jr-detail-chip">
+                  Created by {job.createdBy.name || job.createdBy.email}
+                </span>
+              )}
               {hasResume ? (
                 <span className="jr-detail-chip is-ok">Resume on Drive</span>
               ) : (

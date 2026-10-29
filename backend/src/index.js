@@ -7,6 +7,7 @@ import resumeRouter from './routes/resume.js';
 import authRouter from './routes/auth.js';
 import extractRouter from './routes/extract.js';
 import profileRouter from './routes/profile.js';
+import membersRouter from './routes/members.js';
 import db, { initDb } from './db.js';
 import { consolidateFixedAnswerRows } from './fixedAnswers.js';
 import { ensureAdminUserFromEnv } from './userAuth.js';
@@ -82,6 +83,7 @@ app.use('/api/answers', answersRouter);
 app.use('/api/resume', resumeRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/profile', profileRouter);
+app.use('/api/members', membersRouter);
 app.use('/api/extract', extractRouter);
 
 app.use((err, _req, res, _next) => {

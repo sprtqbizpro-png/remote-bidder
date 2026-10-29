@@ -3,6 +3,7 @@ import JobsPage from './pages/JobsPage.jsx';
 import JobDetailPage from './pages/JobDetailPage.jsx';
 import SettingsPage from './pages/SettingsPage.jsx';
 import ProfilePage from './pages/ProfilePage.jsx';
+import MembersPage from './pages/MembersPage.jsx';
 import SignInPage from './pages/SignInPage.jsx';
 import RequireAuth from './components/RequireAuth.jsx';
 import { api } from './api.js';
@@ -22,6 +23,17 @@ function IconProfile() {
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
       <circle cx="12" cy="8" r="3.5" />
       <path d="M5 19.5c1.8-3.2 4.2-4.8 7-4.8s5.2 1.6 7 4.8" />
+    </svg>
+  );
+}
+
+function IconMembers() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <circle cx="9" cy="8" r="3" />
+      <circle cx="17" cy="9" r="2.5" />
+      <path d="M3.5 19c1.5-2.8 3.6-4.2 5.5-4.2s4 1.4 5.5 4.2" />
+      <path d="M14 14.2c1.4-.4 2.9.1 4.2 1.5.9 1 1.5 2.2 1.8 3.3" />
     </svg>
   );
 }
@@ -71,6 +83,15 @@ function AppLayout() {
             <IconProfile />
             <span>Profile</span>
           </NavLink>
+          {user?.isOwner ? (
+            <NavLink
+              to="/members"
+              className={({ isActive }) => `jr-nav-item${isActive ? ' is-active' : ''}`}
+            >
+              <IconMembers />
+              <span>Members</span>
+            </NavLink>
+          ) : null}
         </nav>
 
         <div className="jr-sidebar-foot">
@@ -103,6 +124,7 @@ export default function App() {
           <Route path="/" element={<JobsPage />} />
           <Route path="/jobs/:id" element={<JobDetailPage />} />
           <Route path="/profile" element={<ProfilePage />} />
+          <Route path="/members" element={<MembersPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>

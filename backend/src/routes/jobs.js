@@ -7,11 +7,13 @@ import {
   uploadJobInfoText,
   formatJobInfoText,
 } from '../googleDrive.js';
+import { getBearerToken, requireUser, userFromToken } from '../userAuth.js';
 
 const router = Router();
 
 function mapJob(row) {
   if (!row) return null;
+  const creator = row.created_by_user_id ? db.findUserById(row.created_by_user_id) : null;
   return {
     id: row.id,
     companyName: row.company_name,
@@ -23,6 +25,11 @@ function mapJob(row) {
     jobInfoDriveFileId: row.job_info_drive_file_id || null,
     sourceUrl: row.source_url,
     appliedAt: row.applied_at,
+    createdBy: {
+      userId: row.created_by_user_id || null,
+      email: row.created_by_email || creator?.email || null,
+      name: row.created_by_name || creator?.name || null,
+    },
   };
 }
 
@@ -34,11 +41,16 @@ function safeFilePart(s, fallback) {
     .slice(0, 80);
 }
 
-router.get('/', (_req, res) => {
+router.get('/', (req, res) => {
+  // Prefer authenticated access; still allow list if signed in via optional token.
+  const user = userFromToken(getBearerToken(req));
+  if (!user) return res.status(401).json({ error: 'Sign in required' });
   res.json(db.listJobs().map(mapJob));
 });
 
 router.get('/:id', (req, res) => {
+  const user = userFromToken(getBearerToken(req));
+  if (!user) return res.status(401).json({ error: 'Sign in required' });
   const job = mapJob(db.getJob(req.params.id));
   if (!job) return res.status(404).json({ error: 'Job not found' });
   res.json(job);
@@ -49,6 +61,9 @@ router.get('/:id', (req, res) => {
  * Also uploads a review .txt (title, company, description) to Google Drive when connected.
  */
 router.post('/', async (req, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
+
   const {
     companyName,
     roleName,
@@ -102,6 +117,9 @@ router.post('/', async (req, res) => {
     job_info_drive_file_id: jobInfoDriveFileId,
     source_url: sourceUrl || null,
     applied_at: appliedAt,
+    created_by_user_id: user.id,
+    created_by_email: user.email,
+    created_by_name: user.name || user.email,
   });
 
   const mapped = mapJob(row);
@@ -116,6 +134,8 @@ router.post('/', async (req, res) => {
 });
 
 router.delete('/:id', (req, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
   if (!db.deleteJob(req.params.id)) {
     return res.status(404).json({ error: 'Job not found' });
   }

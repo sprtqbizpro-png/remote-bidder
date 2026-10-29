@@ -1924,19 +1924,47 @@ main {
 }
 
 .jr-jobs-table .jr-td-role {
-  width: 38%;
+  width: 30%;
+}
+
+.jr-jobs-table .jr-td-created-by {
+  width: 18%;
 }
 
 .jr-jobs-table .jr-td-date {
-  width: 14%;
+  width: 12%;
 }
 
 .jr-jobs-table .jr-td-status {
-  width: 22%;
+  width: 18%;
 }
 
 .jr-jobs-table .jr-td-actions {
-  width: 26%;
+  width: 22%;
+}
+
+.jr-created-by {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.jr-created-by-name {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jr-created-by-email {
+  font-size: 0.75rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .jr-jobs-table thead th {
@@ -2643,7 +2671,7 @@ main {
   justify-content: space-between;
   gap: 1rem;
   margin-bottom: 0.95rem;
-  flex-wrap: wrap;
+    flex-wrap: wrap;
 }
 
 .jr-detail-back {
@@ -2857,7 +2885,7 @@ main {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.85rem;
+    gap: 0.85rem;
   min-height: 0;
 }
 
@@ -2877,7 +2905,7 @@ main {
 }
 
 .jr-detail-card-fill {
-  flex: 1;
+    flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -3061,7 +3089,7 @@ main {
 
 .jr-detail-drive-row {
   display: grid;
-  grid-template-columns: 1fr;
+    grid-template-columns: 1fr;
   gap: 0.5rem;
 }
 
@@ -3601,7 +3629,7 @@ main {
   }
 }
 
-/* ——— Sign in ——— */
+/* ï¿½ï¿½ï¿½ Sign in ï¿½ï¿½ï¿½ */
 .jr-signin-page {
   min-height: 100vh;
   display: grid;
@@ -3805,4 +3833,82 @@ main {
 
 .jr-sidebar-signout:hover {
   color: var(--danger);
+}
+
+.jr-members-lede {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+  max-width: 36rem;
+}
+
+.jr-members-panel {
+  margin: 0 0 1.25rem;
+  padding: 1.25rem 1.35rem;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.03),
+    0 12px 28px rgba(15, 23, 42, 0.05);
+}
+
+.jr-members-panel h2 {
+  margin: 0 0 1rem;
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+}
+
+.jr-members-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.9rem 1rem;
+  align-items: end;
+}
+
+.jr-members-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.jr-members-form input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.65rem 0.8rem;
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--ink);
+  background: #fff;
+}
+
+.jr-members-form input:disabled {
+  background: #f4f5f5;
+  color: var(--muted);
+}
+
+.jr-members-form-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.jr-members-table .jr-td-actions {
+  width: 28%;
+}
+
+@media (max-width: 900px) {
+  .jr-members-form {
+    grid-template-columns: 1fr;
+  }
 }
