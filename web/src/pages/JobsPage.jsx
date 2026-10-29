@@ -3,19 +3,47 @@ import { Link } from 'react-router-dom';
 import { api } from '../api.js';
 import { getStoredUser } from '../auth.js';
 
-function formatRelative(iso) {
-  if (!iso) return '—';
+function parseAppliedDate(iso) {
+  if (!iso) return null;
   try {
-    const d = new Date(iso.includes('Z') || iso.includes('+') ? iso : `${iso}Z`);
-    const diff = Date.now() - d.getTime();
-    const mins = Math.floor(diff / 60000);
-    if (mins < 60) return `${Math.max(1, mins)}m ago`;
-    const hrs = Math.floor(mins / 60);
-    if (hrs < 48) return `${hrs}h ago`;
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    return new Date(iso.includes('Z') || iso.includes('+') ? iso : `${iso}Z`);
   } catch {
-    return iso;
+    return null;
   }
+}
+
+/** Under 24h: relative. 24h+: applied date/time. */
+function formatAppliedAt(iso) {
+  if (!iso) return '—';
+  const d = parseAppliedDate(iso);
+  if (!d || Number.isNaN(d.getTime())) return iso;
+  const diffMs = Date.now() - d.getTime();
+  const hrs = diffMs / 3600000;
+  if (hrs < 24) {
+    const mins = Math.floor(diffMs / 60000);
+    if (mins < 60) return `${Math.max(1, mins)}m ago`;
+    return `${Math.floor(hrs)}h ago`;
+  }
+  return d.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function formatRelativeShort(iso) {
+  if (!iso) return '—';
+  const d = parseAppliedDate(iso) || (iso instanceof Date ? iso : new Date(iso));
+  if (!d || Number.isNaN(d.getTime())) return '—';
+  const diff = Date.now() - d.getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 48) return `${hrs}h ago`;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 function initials(name) {
@@ -30,13 +58,44 @@ function initials(name) {
 
 function statusMeta(job) {
   return {
-    hasResume: !!job.resumeDriveLink,
-    hasJobInfo: !!job.jobInfoDriveLink,
+    hasResume: !!(job.resumeDriveLink || job.resumeDriveFileId),
+    hasJobInfo: !!(job.jobInfoDriveLink || job.jobInfoDriveFileId),
     hasSource: !!job.sourceUrl,
   };
 }
 
+function creatorKey(job) {
+  return String(job.createdBy?.email || job.createdBy?.name || '').trim().toLowerCase();
+}
+
+function creatorLabel(job) {
+  return job.createdBy?.name || job.createdBy?.email || '';
+}
+
 const PAGE_SIZE = 8;
+const JOBS_POLL_MS = 15000;
+
+const DATE_PRESETS = [
+  { id: 'all', label: 'Any time' },
+  { id: '24h', label: 'Last 24 hours' },
+  { id: '7d', label: 'Last 7 days' },
+  { id: '30d', label: 'Last 30 days' },
+];
+
+const STATUS_PRESETS = [
+  { id: 'all', label: 'Any status' },
+  { id: 'resume', label: 'Has resume' },
+  { id: 'no-resume', label: 'No resume' },
+  { id: 'job-info', label: 'Has job info' },
+  { id: 'source', label: 'Has source' },
+];
+
+const SORT_PRESETS = [
+  { id: 'newest', label: 'Newest first' },
+  { id: 'oldest', label: 'Oldest first' },
+  { id: 'company', label: 'Company A–Z' },
+  { id: 'role', label: 'Role A–Z' },
+];
 
 function buildPageItems(current, total) {
   if (total <= 7) {
@@ -62,7 +121,14 @@ function buildPageItems(current, total) {
   return items;
 }
 
-const JOBS_POLL_MS = 15000;
+const emptyFilters = {
+  query: '',
+  company: '',
+  createdBy: '',
+  dateRange: 'all',
+  status: 'all',
+  sort: 'newest',
+};
 
 export default function JobsPage() {
   const user = getStoredUser();
@@ -70,10 +136,14 @@ export default function JobsPage() {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [query, setQuery] = useState('');
+  const [filters, setFilters] = useState(emptyFilters);
   const [tab, setTab] = useState('applied');
   const [page, setPage] = useState(1);
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
+
+  function patchFilter(patch) {
+    setFilters((prev) => ({ ...prev, ...patch }));
+  }
 
   async function loadJobs({ quiet = false } = {}) {
     try {
@@ -110,21 +180,101 @@ export default function JobsPage() {
     };
   }, []);
 
+  const companies = useMemo(() => {
+    const set = new Set();
+    jobs.forEach((j) => {
+      const c = String(j.companyName || '').trim();
+      if (c) set.add(c);
+    });
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [jobs]);
+
+  const creators = useMemo(() => {
+    const map = new Map();
+    jobs.forEach((j) => {
+      const key = creatorKey(j);
+      const label = creatorLabel(j);
+      if (key && label) map.set(key, label);
+    });
+    return [...map.entries()]
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [jobs]);
+
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return jobs;
-    return jobs.filter((job) =>
-      [
-        job.companyName,
-        job.roleName,
-        job.jobDescription,
-        job.createdBy?.name,
-        job.createdBy?.email,
-      ]
-        .filter(Boolean)
-        .some((v) => v.toLowerCase().includes(q))
-    );
-  }, [jobs, query]);
+    const q = filters.query.trim().toLowerCase();
+    const companyQ = filters.company.trim().toLowerCase();
+    const now = Date.now();
+
+    let list = jobs.filter((job) => {
+      if (q) {
+        const hay = [
+          job.companyName,
+          job.roleName,
+          job.jobDescription,
+          job.createdBy?.name,
+          job.createdBy?.email,
+          job.sourceUrl,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+
+      if (companyQ && String(job.companyName || '').toLowerCase() !== companyQ) {
+        return false;
+      }
+
+      if (filters.createdBy) {
+        if (creatorKey(job) !== filters.createdBy) return false;
+      }
+
+      if (filters.dateRange !== 'all') {
+        const d = parseAppliedDate(job.appliedAt);
+        if (!d) return false;
+        const ageMs = now - d.getTime();
+        if (filters.dateRange === '24h' && ageMs > 24 * 3600000) return false;
+        if (filters.dateRange === '7d' && ageMs > 7 * 24 * 3600000) return false;
+        if (filters.dateRange === '30d' && ageMs > 30 * 24 * 3600000) return false;
+      }
+
+      const status = statusMeta(job);
+      if (filters.status === 'resume' && !status.hasResume) return false;
+      if (filters.status === 'no-resume' && status.hasResume) return false;
+      if (filters.status === 'job-info' && !status.hasJobInfo) return false;
+      if (filters.status === 'source' && !status.hasSource) return false;
+
+      return true;
+    });
+
+    const sorted = list.slice();
+    sorted.sort((a, b) => {
+      if (filters.sort === 'oldest') {
+        return String(a.appliedAt || '').localeCompare(String(b.appliedAt || ''));
+      }
+      if (filters.sort === 'company') {
+        return String(a.companyName || '').localeCompare(String(b.companyName || ''));
+      }
+      if (filters.sort === 'role') {
+        return String(a.roleName || '').localeCompare(String(b.roleName || ''));
+      }
+      // newest
+      return String(b.appliedAt || '').localeCompare(String(a.appliedAt || ''));
+    });
+    return sorted;
+  }, [jobs, filters]);
+
+  const activeFilterCount = useMemo(() => {
+    let n = 0;
+    if (filters.query.trim()) n += 1;
+    if (filters.company) n += 1;
+    if (filters.createdBy) n += 1;
+    if (filters.dateRange !== 'all') n += 1;
+    if (filters.status !== 'all') n += 1;
+    if (filters.sort !== 'newest') n += 1;
+    return n;
+  }, [filters]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
@@ -143,7 +293,14 @@ export default function JobsPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [query]);
+  }, [
+    filters.query,
+    filters.company,
+    filters.createdBy,
+    filters.dateRange,
+    filters.status,
+    filters.sort,
+  ]);
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -159,6 +316,10 @@ export default function JobsPage() {
     const clamped = Math.min(Math.max(1, next), totalPages);
     setPage(clamped);
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function clearFilters() {
+    setFilters(emptyFilters);
   }
 
   return (
@@ -181,20 +342,117 @@ export default function JobsPage() {
           </div>
           {lastSyncedAt ? (
             <p className="jr-jobs-sync-meta" aria-live="polite">
-              Updated {formatRelative(lastSyncedAt.toISOString())} · auto-refreshes every 15s
+              Updated {formatRelativeShort(lastSyncedAt)} · auto-refreshes every 15s
             </p>
           ) : null}
         </div>
-        <div className="jr-page-search">
-          <input
-            type="search"
-            placeholder="Search company or role…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            aria-label="Search jobs"
-          />
-        </div>
       </header>
+
+      {!loading && jobs.length > 0 && (
+        <section className="jr-jobs-filters" aria-label="Filter and search jobs">
+          <div className="jr-jobs-filters-row">
+            <label className="jr-jobs-filter-field jr-jobs-filter-search">
+              <span className="jr-jobs-filter-label">Search</span>
+              <input
+                type="search"
+                placeholder="Company, role, creator, keywords…"
+                value={filters.query}
+                onChange={(e) => patchFilter({ query: e.target.value })}
+                aria-label="Search jobs"
+              />
+            </label>
+            <label className="jr-jobs-filter-field">
+              <span className="jr-jobs-filter-label">Company</span>
+              <select
+                value={filters.company}
+                onChange={(e) => patchFilter({ company: e.target.value })}
+                aria-label="Filter by company"
+              >
+                <option value="">All companies</option>
+                {companies.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="jr-jobs-filter-field">
+              <span className="jr-jobs-filter-label">Created by</span>
+              <select
+                value={filters.createdBy}
+                onChange={(e) => patchFilter({ createdBy: e.target.value })}
+                aria-label="Filter by creator"
+              >
+                <option value="">Anyone</option>
+                {creators.map((c) => (
+                  <option key={c.value} value={c.value}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="jr-jobs-filter-field">
+              <span className="jr-jobs-filter-label">Applied</span>
+              <select
+                value={filters.dateRange}
+                onChange={(e) => patchFilter({ dateRange: e.target.value })}
+                aria-label="Filter by applied date"
+              >
+                {DATE_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="jr-jobs-filter-field">
+              <span className="jr-jobs-filter-label">Status</span>
+              <select
+                value={filters.status}
+                onChange={(e) => patchFilter({ status: e.target.value })}
+                aria-label="Filter by status"
+              >
+                {STATUS_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="jr-jobs-filter-field">
+              <span className="jr-jobs-filter-label">Sort</span>
+              <select
+                value={filters.sort}
+                onChange={(e) => patchFilter({ sort: e.target.value })}
+                aria-label="Sort jobs"
+              >
+                {SORT_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="jr-jobs-filters-foot">
+            <p className="jr-jobs-filters-count">
+              Showing <strong>{filtered.length}</strong> of <strong>{jobs.length}</strong>
+              {activeFilterCount ? (
+                <>
+                  {' '}
+                  · <strong>{activeFilterCount}</strong> filter
+                  {activeFilterCount === 1 ? '' : 's'} active
+                </>
+              ) : null}
+            </p>
+            {activeFilterCount > 0 ? (
+              <button type="button" className="jr-jobs-filters-clear" onClick={clearFilters}>
+                Clear filters
+              </button>
+            ) : null}
+          </div>
+        </section>
+      )}
 
       {loading && (
         <div className="jr-jobs-loading" aria-busy="true">
@@ -228,7 +486,10 @@ export default function JobsPage() {
         <div className="jr-jobs-empty">
           <div className="jr-jobs-empty-card">
             <h2>No matches</h2>
-            <p>Try a different company or role keyword.</p>
+            <p>Try adjusting search or filters.</p>
+            <button type="button" className="btn btn-ghost" onClick={clearFilters}>
+              Clear filters
+            </button>
           </div>
         </div>
       )}
@@ -277,7 +538,9 @@ export default function JobsPage() {
                         </div>
                       </td>
                       <td className="jr-td-date">
-                        <time dateTime={job.appliedAt || undefined}>{formatRelative(job.appliedAt)}</time>
+                        <time dateTime={job.appliedAt || undefined}>
+                          {formatAppliedAt(job.appliedAt)}
+                        </time>
                       </td>
                       <td className="jr-td-status">
                         <div className="jr-table-badges">
@@ -295,7 +558,7 @@ export default function JobsPage() {
                           <Link to={`/jobs/${job.id}`} className="jr-table-btn jr-table-btn-primary">
                             Details
                           </Link>
-                          {job.resumeDriveLink ? (
+                          {job.resumeDriveLink || job.resumeDriveFileId ? (
                             <Link
                               to={`/jobs/${job.id}?view=resume`}
                               className="jr-table-btn jr-table-btn-accent"
@@ -333,7 +596,10 @@ export default function JobsPage() {
 
           <nav className="jr-pagination" aria-label="Jobs pagination">
             <p className="jr-pagination-meta">
-              Showing <strong>{rangeStart}–{rangeEnd}</strong> of <strong>{filtered.length}</strong>
+              Showing <strong>
+                {rangeStart}–{rangeEnd}
+              </strong>{' '}
+              of <strong>{filtered.length}</strong>
             </p>
             <div className="jr-pagination-controls">
               <button
