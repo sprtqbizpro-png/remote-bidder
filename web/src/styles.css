@@ -2937,6 +2937,36 @@ main {
   color: var(--muted);
 }
 
+.jr-detail-card-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.jr-detail-copy-btn {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink-soft);
+  border-radius: 999px;
+  padding: 0.35rem 0.75rem;
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.jr-detail-copy-btn:hover:not(:disabled) {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+.jr-detail-copy-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .jr-detail-card-body {
   padding: 1.4rem 1.5rem 1.7rem;
   max-height: min(72vh, 760px);

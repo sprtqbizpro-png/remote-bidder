@@ -4,7 +4,7 @@ import { api } from '../api.js';
 import JobDescriptionView from '../components/JobDescriptionView.jsx';
 import ResumeViewer from '../components/ResumeViewer.jsx';
 import { structureJobDescription } from '../lib/jobDescription.js';
-import { driveOpenUrl } from '../lib/drive.js';
+import { driveDownloadUrl, driveOpenUrl } from '../lib/drive.js';
 
 function formatDate(iso) {
   if (!iso) return '';
@@ -41,6 +41,7 @@ export default function JobDetailPage() {
   const [panel, setPanel] = useState(
     searchParams.get('view') === 'resume' ? 'resume' : 'description'
   );
+  const [copyMsg, setCopyMsg] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -91,6 +92,36 @@ export default function JobDetailPage() {
     URL.revokeObjectURL(url);
   }
 
+  async function copyDescription() {
+    if (!job?.jobDescription) return;
+    const text = structureJobDescription(job.jobDescription || '');
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyMsg('Copied');
+      setTimeout(() => setCopyMsg(''), 2000);
+    } catch {
+      setCopyMsg('Copy failed');
+      setTimeout(() => setCopyMsg(''), 2000);
+    }
+  }
+
+  function downloadResume() {
+    const href = driveDownloadUrl({
+      fileId: job?.resumeDriveFileId,
+      link: job?.resumeDriveLink,
+    });
+    if (!href) return;
+    const a = document.createElement('a');
+    a.href = href;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.download = `${job.companyName || 'Company'}-${job.roleName || 'Role'}-Resume`.replace(
+      /[^\w.-]+/g,
+      '_'
+    );
+    a.click();
+  }
+
   if (loading) {
     return (
       <div className="jr-page-detail">
@@ -117,6 +148,10 @@ export default function JobDetailPage() {
 
   const hasResume = !!(job.resumeDriveLink || job.resumeDriveFileId);
   const resumeOpen = driveOpenUrl({
+    fileId: job.resumeDriveFileId,
+    link: job.resumeDriveLink,
+  });
+  const resumeDownload = driveDownloadUrl({
     fileId: job.resumeDriveFileId,
     link: job.resumeDriveLink,
   });
@@ -212,6 +247,15 @@ export default function JobDetailPage() {
               View resume
             </button>
           )}
+          {resumeDownload && (
+            <button
+              type="button"
+              className="jr-detail-btn jr-detail-btn-ghost"
+              onClick={downloadResume}
+            >
+              Download resume
+            </button>
+          )}
           {jobInfoOpen && (
             <a
               className="jr-detail-btn jr-detail-btn-ghost"
@@ -236,7 +280,17 @@ export default function JobDetailPage() {
           <div className="jr-detail-card jr-detail-card-fill">
             <div className="jr-detail-card-head">
               <span>Job description</span>
-              <span className="jr-detail-card-hint">Cleaned & structured</span>
+              <div className="jr-detail-card-head-actions">
+                {copyMsg ? <span className="jr-detail-card-hint">{copyMsg}</span> : null}
+                <button
+                  type="button"
+                  className="jr-detail-copy-btn"
+                  onClick={copyDescription}
+                  disabled={!job.jobDescription}
+                >
+                  Copy
+                </button>
+              </div>
             </div>
             <div className="jr-detail-card-body">
               <JobDescriptionView text={job.jobDescription} />
@@ -252,7 +306,14 @@ export default function JobDetailPage() {
           <div className="jr-detail-card jr-detail-card-resume jr-detail-card-fill">
             <div className="jr-detail-card-head">
               <span>Resume preview</span>
-              <span className="jr-detail-card-hint">Google Drive</span>
+              <div className="jr-detail-card-head-actions">
+                <span className="jr-detail-card-hint">Google Drive</span>
+                {resumeDownload ? (
+                  <button type="button" className="jr-detail-copy-btn" onClick={downloadResume}>
+                    Download
+                  </button>
+                ) : null}
+              </div>
             </div>
             <div className="jr-detail-card-body jr-detail-card-body-flush">
               <ResumeViewer

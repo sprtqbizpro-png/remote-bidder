@@ -1455,7 +1455,6 @@
       resume: !!(lastResumeDataUrl || lastResumeLink),
       save: false,
     });
-    if (view !== 'apply') return;
     const company = document.getElementById('hs-company');
     if (company) company.value = '';
     const role = document.getElementById('hs-role');
@@ -1463,6 +1462,8 @@
     const url = document.getElementById('hs-url');
     if (url) url.value = '';
     setDescription('');
+    const descInput = document.getElementById('hs-job-desc-input');
+    if (descInput) descInput.value = '';
     const saveBtn = document.getElementById('hs-save');
     if (saveBtn) {
       saveBtn.textContent = 'Save applied job';
@@ -2133,7 +2134,18 @@
           );
           const ok = await confirmExistingCompanyJobs(companyName, existing);
           if (!ok) {
-            setStatus('Add job cancelled.', false, 'ok');
+            // Stop: leave description blank and do not extract.
+            if (jobInfo) {
+              jobInfo = { ...jobInfo, jobDescription: '' };
+            }
+            setDescription('');
+            const descInput = document.getElementById('hs-job-desc-input');
+            if (descInput) descInput.value = '';
+            steps.extract = false;
+            updateSteps();
+            syncJobCard();
+            persistDraft();
+            setStatus('Add job stopped — job description left blank.', false, 'ok');
             return;
           }
         }
@@ -3320,12 +3332,26 @@
       sourceUrl: formInfo.sourceUrl || jobInfo?.sourceUrl || location.href,
     };
 
-    if (!info.companyName || !info.roleName || !info.jobDescription) {
+    if (!info.companyName || !info.roleName) {
+      const msg =
+        'Company and role are required. Use “Add a new job for this page” first.';
       if (!auto) {
-        setStatus(
-          'Company, role, and description are required. Use “Add a new job for this page” first.',
-          true
-        );
+        alert(msg);
+        setStatus(msg, true);
+      }
+      return { ok: false, skipped: true };
+    }
+
+    const hasDescription = !!String(info.jobDescription || '').trim();
+    const hasResume = !!(lastResumeDataUrl || lastResumeLink || lastResumeName);
+    if (!hasDescription || !hasResume) {
+      const missing = [];
+      if (!hasDescription) missing.push('job description');
+      if (!hasResume) missing.push('resume');
+      const msg = `Cannot save applied job — missing ${missing.join(' and ')}.`;
+      if (!auto) {
+        alert(msg);
+        setStatus(msg, true);
       }
       return { ok: false, skipped: true };
     }
@@ -3424,9 +3450,12 @@
       await notifyAppliedSaved(info);
 
       await send('CLEAR_DRAFT_JOB');
-      // Clear resume like job description — next application starts clean
+      // Clear resume + job description after a successful save
       await clearResumeState();
       clearFormUI();
+      setDescription('');
+      const descInput = document.getElementById('hs-job-desc-input');
+      if (descInput) descInput.value = '';
 
       const saveBtn = document.getElementById('hs-save');
       if (saveBtn) {

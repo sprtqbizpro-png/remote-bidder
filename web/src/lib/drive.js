@@ -24,3 +24,10 @@ export function driveOpenUrl({ fileId, link } = {}) {
   if (fileId) return `https://drive.google.com/file/d/${fileId}/view`;
   return null;
 }
+
+/** Direct download URL for a Drive file. */
+export function driveDownloadUrl({ fileId, link } = {}) {
+  const id = fileId || driveFileIdFromLink(link);
+  if (!id) return null;
+  return `https://drive.google.com/uc?export=download&id=${id}`;
+}

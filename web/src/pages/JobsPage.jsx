@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api.js';
+import { getStoredUser } from '../auth.js';
 
 function formatRelative(iso) {
   if (!iso) return '—';
@@ -62,6 +63,8 @@ function buildPageItems(current, total) {
 }
 
 export default function JobsPage() {
+  const user = getStoredUser();
+  const canRemoveJobs = !!user?.isOwner;
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -283,14 +286,16 @@ export default function JobsPage() {
                               Posting
                             </a>
                           ) : null}
-                          <button
-                            type="button"
-                            className="jr-table-btn jr-table-btn-danger"
-                            onClick={() => handleDelete(job.id)}
-                            aria-label={`Remove ${job.roleName}`}
-                          >
-                            Remove
-                          </button>
+                          {canRemoveJobs ? (
+                            <button
+                              type="button"
+                              className="jr-table-btn jr-table-btn-danger"
+                              onClick={() => handleDelete(job.id)}
+                              aria-label={`Remove ${job.roleName}`}
+                            >
+                              Remove
+                            </button>
+                          ) : null}
                         </div>
                       </td>
                     </tr>

@@ -663,6 +663,12 @@
     if (/^(no|n|false|0)$/i.test(a) && /^(no|n|false|0)$/i.test(h) && !/not\s+to|know/i.test(h)) {
       return true;
     }
+    // Long free-text answers vs short Yes/No option labels
+    const aPol = inferAnswerPolarity(a);
+    const hPol = inferAnswerPolarity(h);
+    if (aPol && hPol && aPol === hPol && (/^(yes|no)$/i.test(h) || /^(yes|no)$/i.test(a))) {
+      return true;
+    }
     if (/^male$/i.test(a) && /^(male|man|m)$/i.test(h)) return true;
     if (/^female$/i.test(a) && /^(female|woman|f)$/i.test(h)) return true;
     if (/non[- ]?binary/i.test(a) && /non[- ]?binary/i.test(h)) return true;
@@ -3079,15 +3085,74 @@
     return false;
   }
 
+  /**
+   * Infer Yes / No / Decline polarity from free-text or short answers.
+   * Long AI sentences like "No, I am not a government official…" → 'no'.
+   */
+  function inferAnswerPolarity(answer) {
+    const a = String(answer || '').trim();
+    if (!a) return null;
+    if (/decline\s+to|prefer\s+not|do\s+not\s+wish|rather\s+not|not\s+say|self[- ]?identify/i.test(a)) {
+      // Decline phrases that are not clearly Yes/No
+      if (!/^(yes|no)\b/i.test(a)) return 'decline';
+    }
+    if (/^(yes|y)\b/i.test(a)) return 'yes';
+    if (/^(no|n)\b/i.test(a)) return 'no';
+    // "I am not…" / "I'm not…" / "not a …"
+    if (
+      /\b(i\s+am\s+not|i'?m\s+not|not\s+a\s+|do\s+not\s+have|don't\s+have|have\s+never|never\s+been)\b/i.test(
+        a
+      )
+    ) {
+      return 'no';
+    }
+    if (/\b(i\s+am\s+a|i'?m\s+a|i\s+have\s+a|i\s+do\s+have|yes[, ]+i)\b/i.test(a)) return 'yes';
+    if (/^(true|1|checked)$/i.test(a)) return 'yes';
+    if (/^(false|0|unchecked)$/i.test(a)) return 'no';
+    return null;
+  }
+
+  /** Short filter strings that searchable dropdowns can match against option lists. */
+  function shortFilterCandidates(answer, question) {
+    const polarity = inferAnswerPolarity(answer);
+    const out = [];
+    if (polarity === 'yes') out.push('Yes', 'Y');
+    if (polarity === 'no') out.push('No', 'N');
+    if (polarity === 'decline') out.push('Decline', 'Prefer not', 'Prefer');
+    const raw = String(answer || '').trim();
+    // First short clause before comma / em-dash (often "No" or "Yes")
+    const head = raw.split(/[,—–-]/)[0].trim();
+    if (head && head.length <= 24) out.push(head);
+    if (raw && raw.length <= 24) out.push(raw);
+    // Prefer polarity shorts for EE / government-style yes-no questions
+    const q = String(question || '');
+    if (
+      polarity &&
+      /official|relative|sponsor|authoriz|veteran|disability|hispanic|gender|race|eligible|work\b/i.test(
+        q
+      )
+    ) {
+      return [...new Set(out.filter(Boolean))];
+    }
+    return [...new Set(out.filter(Boolean))];
+  }
+
   /** Expand Yes/No into the real ATS option labels for common EE questions. */
   function expandAnswerCandidates(answer, question) {
     const a = String(answer || '').trim();
     const q = String(question || '').toLowerCase();
+    const polarity = inferAnswerPolarity(a);
     const out = [];
     if (a) out.push(a);
+    // Always add short Yes/No so combobox filters don't use the essay text
+    if (polarity === 'yes') out.push('Yes', 'Y');
+    if (polarity === 'no') out.push('No', 'N');
+    if (polarity === 'decline') {
+      out.push('Decline to self-identify', 'Prefer not to say', 'Decline to state', 'Decline');
+    }
 
     if (/veteran/i.test(q)) {
-      if (/^(no|n)$/i.test(a) || /not a (protected )?veteran/i.test(a) || /decline/i.test(a) && /not/i.test(a)) {
+      if (polarity === 'no' || /not a (protected )?veteran/i.test(a)) {
         out.push(
           'I am not a protected veteran',
           'No, I am not a protected veteran',
@@ -3095,38 +3160,46 @@
           'Not a protected veteran',
           'No'
         );
-      } else if (/^(yes|y)$/i.test(a) || /protected veteran/i.test(a)) {
+      } else if (polarity === 'yes' || /protected veteran/i.test(a)) {
         out.push(
           'I identify as one or more of the classifications of a protected veteran',
           'Yes, I am a veteran',
           'I am a protected veteran',
           'Yes'
         );
-      } else if (/decline|prefer not/i.test(a)) {
+      } else if (polarity === 'decline' || /decline|prefer not/i.test(a)) {
         out.push("I don't wish to answer", 'Decline to self-identify', 'Prefer not to say', a);
       }
     }
 
     if (/hispanic|latino/i.test(q)) {
-      if (/^(no|n)$/i.test(a)) out.push('No');
-      if (/^(yes|y)$/i.test(a)) out.push('Yes');
-      if (/decline|prefer not/i.test(a)) out.push('Decline to self-identify', 'Prefer not to say');
+      if (polarity === 'no') out.push('No');
+      if (polarity === 'yes') out.push('Yes');
+      if (polarity === 'decline' || /decline|prefer not/i.test(a)) {
+        out.push('Decline to self-identify', 'Prefer not to say');
+      }
     }
 
-    if (/sponsor|authorized|eligible to work|work in the us|legally authorized/i.test(q)) {
-      if (/^(yes|y)$/i.test(a)) out.push('Yes');
-      if (/^(no|n)$/i.test(a)) out.push('No');
+    if (
+      /sponsor|authorized|eligible to work|work in the us|legally authorized|government official|close relative|public office|civil service/i.test(
+        q
+      )
+    ) {
+      if (polarity === 'yes') out.push('Yes');
+      if (polarity === 'no') out.push('No');
     }
 
     if (/disability/i.test(q)) {
-      if (/^(no|n)$/i.test(a)) out.push('No, I do not have a disability', 'No');
-      if (/^(yes|y)$/i.test(a)) out.push('Yes, I have a disability', 'Yes');
-      if (/decline|prefer not/i.test(a)) {
+      if (polarity === 'no') out.push('No, I do not have a disability', 'No');
+      if (polarity === 'yes') out.push('Yes, I have a disability', 'Yes');
+      if (polarity === 'decline' || /decline|prefer not/i.test(a)) {
         out.push('I do not want to answer', 'Decline to self-identify', 'Prefer not to say');
       }
     }
 
-    return [...new Set(out.filter(Boolean))];
+    // Put short polarity tokens first so callers that take candidates[0] stay safe
+    const shorts = shortFilterCandidates(a, question);
+    return [...new Set([...shorts, ...out].filter(Boolean))];
   }
 
   function optionMatchScore(want, optionText) {
@@ -3140,6 +3213,18 @@
     if (a === h) return 100;
     if (/^(yes|no)$/i.test(a) && a === h) return 100;
 
+    const wantPol = inferAnswerPolarity(a);
+    const optPol = inferAnswerPolarity(h);
+    // Long "No, I am not…" vs option "No"
+    if (wantPol && optPol && wantPol === optPol) {
+      if (/^(yes|no)$/i.test(h)) return 98;
+      if (h.length <= 48) return 90;
+    }
+    // Avoid matching "No" answer to a "Yes, …" option
+    if (wantPol && optPol && wantPol !== optPol && wantPol !== 'decline' && optPol !== 'decline') {
+      return 0;
+    }
+
     // Veteran: profile "No" → "I am not a protected veteran"
     if (/^(no|n)$/i.test(a) && /not a (protected )?veteran|i am not a veteran/i.test(h)) return 96;
     if (
@@ -3152,6 +3237,8 @@
 
     if (answersMatch(a, h)) return 75;
     if (h.startsWith(a) && a.length >= 2) return 60;
+    // Option text contained in long answer ("No" inside "No, I am not…")
+    if (h.length >= 2 && h.length <= 40 && a.includes(h) && /^(yes|no)\b/i.test(h)) return 88;
     if (a.length >= 3 && h.includes(a)) return 45;
     return 0;
   }
@@ -3242,11 +3329,12 @@
     el.dispatchEvent(new KeyboardEvent('keyup', opts));
   }
 
-  function pickBestOption(options, candidates) {
+  function pickBestOption(options, candidates, { minScore = 40 } = {}) {
     let best = null;
     let bestScore = 0;
     for (const node of options) {
       const text = normalizeLabel(node.innerText || node.getAttribute('aria-label') || '');
+      if (!text || /^(no options?|no results?|type to search|search)$/i.test(text)) continue;
       for (const c of candidates) {
         const score = optionMatchScore(c, text);
         // Prefer longer concrete labels (veteran phrasing) over a bare "No"
@@ -3258,7 +3346,26 @@
         }
       }
     }
-    return bestScore > 0 ? best : null;
+    return bestScore >= minScore ? best : null;
+  }
+
+  function optionNodeText(node) {
+    return normalizeLabel(node?.innerText || node?.getAttribute?.('aria-label') || '');
+  }
+
+  /** Type a short filter into a combobox input (never paste essay answers). */
+  function typeComboboxFilter(el, filterText) {
+    const text = String(filterText || '').trim();
+    setNativeValue(el, '', { blur: false });
+    if (!text) return;
+    setNativeValue(el, text, { blur: false });
+    try {
+      el.dispatchEvent(
+        new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' })
+      );
+    } catch {
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
   }
 
   function comboboxLooksCommitted(el, candidates) {
@@ -3284,6 +3391,7 @@
   async function fillCombobox(el, answer, question) {
     const candidates = expandAnswerCandidates(answer, question);
     if (!candidates.length) return false;
+    const filters = shortFilterCandidates(answer, question);
 
     try {
       el.focus();
@@ -3307,20 +3415,8 @@
     }
     await sleep(80);
 
-    // Clear then type a filter string (prefer short Yes/No so lists filter)
-    const filterText =
-      candidates.find((c) => /^(yes|no)$/i.test(c)) ||
-      candidates.find((c) => c.length <= 24) ||
-      candidates[0];
-    setNativeValue(el, '', { blur: false });
-    await sleep(40);
-    setNativeValue(el, filterText, { blur: false });
-    // React-select listens to InputEvent
-    try {
-      el.dispatchEvent(new InputEvent('input', { bubbles: true, data: filterText, inputType: 'insertText' }));
-    } catch {
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-    }
+    // 1) Open full list first (empty filter) so we can score real options
+    typeComboboxFilter(el, '');
     fireKey(el, 'ArrowDown', 40);
     await sleep(140);
 
@@ -3331,8 +3427,33 @@
       options = findOpenListboxOptions(el);
     }
 
-    const best = pickBestOption(options, candidates);
+    let best = pickBestOption(options, candidates);
+
+    // 2) If needed, filter with SHORT Yes/No (never the essay sentence)
+    if (!best && filters.length) {
+      for (const filterText of filters) {
+        typeComboboxFilter(el, filterText);
+        fireKey(el, 'ArrowDown', 40);
+        await sleep(140);
+        options = findOpenListboxOptions(el);
+        best = pickBestOption(options, candidates);
+        if (best) break;
+      }
+    }
+
+    // 3) If we matched an option, re-filter by that option's short label then click
     if (best) {
+      const optLabel = optionNodeText(best);
+      const shortOpt =
+        filters.find((f) => optionMatchScore(f, optLabel) >= 70) ||
+        (optLabel.length <= 32 ? optLabel : filters[0] || '');
+      if (shortOpt) {
+        typeComboboxFilter(el, shortOpt);
+        await sleep(100);
+        const refined = findOpenListboxOptions(el);
+        const again = pickBestOption(refined, candidates) || pickBestOption(refined, [optLabel, ...candidates]);
+        if (again) best = again;
+      }
       clickOption(best);
       await sleep(80);
       if (comboboxLooksCommitted(el, candidates) || el.getAttribute('aria-expanded') === 'false') {
@@ -3348,7 +3469,12 @@
       }
     }
 
-    // Last resort: ArrowDown + Enter on filtered list
+    // Last resort: short filter + ArrowDown + Enter (still never essay text)
+    const fallbackFilter = filters[0] || '';
+    if (fallbackFilter) {
+      typeComboboxFilter(el, fallbackFilter);
+      await sleep(80);
+    }
     fireKey(el, 'ArrowDown', 40);
     await sleep(40);
     fireKey(el, 'Enter', 13);
@@ -3356,72 +3482,75 @@
 
     const ok =
       comboboxLooksCommitted(el, candidates) ||
-      (el.getAttribute('aria-expanded') === 'false' && !!el.value);
+      (el.getAttribute('aria-expanded') === 'false' &&
+        !!String(el.value || '').trim() &&
+        !/select\.{0,3}/i.test(el.value || ''));
     if (ok) el.classList.add('hs-filled');
-    return ok;
-  }
-
-  function fillSelect(el, answer) {
-    const a = String(answer).toLowerCase().trim();
-    const options = Array.from(el.options);
-    const textOf = (o) => o.text.toLowerCase().trim();
-    const valOf = (o) => o.value.toLowerCase().trim();
-
-    let match =
-      options.find((o) => textOf(o) === a) ||
-      options.find((o) => valOf(o) === a) ||
-      options.find((o) => textOf(o).includes(a) || (a.length > 2 && a.includes(textOf(o))));
-
-    if (!match && /^(yes|y)$/i.test(answer)) {
-      match = options.find((o) => /^yes$/i.test(textOf(o)));
-    }
-    if (!match && /^(no|n)$/i.test(answer)) {
-      match = options.find((o) => /^no$/i.test(textOf(o)));
-    }
-    if (!match && /decline|prefer not|not say|self[- ]?identify/i.test(a)) {
-      match = options.find((o) =>
-        /decline|prefer not|not say|not to answer|self[- ]?identify/i.test(textOf(o))
-      );
-    }
-    // Gender / pronoun / race soft matches
-    if (!match && /^male$/i.test(a)) {
-      match = options.find((o) => /^(male|man|m)$/i.test(textOf(o)));
-    }
-    if (!match && /^female$/i.test(a)) {
-      match = options.find((o) => /^(female|woman|f)$/i.test(textOf(o)));
-    }
-    if (!match) {
-      match =
-        options.find((o) => answersMatch(answer, textOf(o)) || answersMatch(answer, valOf(o))) ||
-        null;
-    }
-    if (!match && /he\/him/i.test(a)) {
-      match = options.find((o) => /he\s*\/\s*him/i.test(textOf(o)));
-    }
-    if (!match && /she\/her/i.test(a)) {
-      match = options.find((o) => /she\s*\/\s*her/i.test(textOf(o)));
-    }
-    if (!match && /they\/them/i.test(a)) {
-      match = options.find((o) => /they\s*\/\s*them/i.test(textOf(o)));
-    }
-
-    if (match) {
-      try {
-        el.focus?.();
-      } catch {
-        /* ignore */
-      }
-      setNativeValue(el, match.value, { focus: true, blur: true });
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
+    // Clear leftover filter text if nothing committed (avoid "No options" residue)
+    if (!ok) {
+      typeComboboxFilter(el, '');
       try {
         el.blur?.();
       } catch {
         /* ignore */
       }
-      return true;
     }
-    return false;
+    return ok;
+  }
+
+  function fillSelect(el, answer, question = '') {
+    const candidates = expandAnswerCandidates(answer, question);
+    const options = Array.from(el.options || []).filter((o) => {
+      const t = String(o.text || '').trim();
+      const v = String(o.value || '').trim();
+      if (!t && !v) return false;
+      if (/^select|choose|—|--$/i.test(t)) return false;
+      return true;
+    });
+    if (!options.length || !candidates.length) return false;
+
+    // Score native <option> nodes the same way as combobox list items
+    let best = null;
+    let bestScore = 0;
+    for (const o of options) {
+      const text = o.text || o.value || '';
+      for (const c of candidates) {
+        const score = optionMatchScore(c, text);
+        if (score > bestScore) {
+          bestScore = score;
+          best = o;
+        }
+      }
+    }
+
+    // Gender / pronoun soft matches if polarity scoring missed
+    if (!best || bestScore < 40) {
+      const a = String(answer || '').toLowerCase().trim();
+      const textOf = (o) => o.text.toLowerCase().trim();
+      if (/^male$/i.test(a)) best = options.find((o) => /^(male|man|m)$/i.test(textOf(o))) || best;
+      if (/^female$/i.test(a)) best = options.find((o) => /^(female|woman|f)$/i.test(textOf(o))) || best;
+      if (/he\/him/i.test(a)) best = options.find((o) => /he\s*\/\s*him/i.test(textOf(o))) || best;
+      if (/she\/her/i.test(a)) best = options.find((o) => /she\s*\/\s*her/i.test(textOf(o))) || best;
+      if (/they\/them/i.test(a)) best = options.find((o) => /they\s*\/\s*them/i.test(textOf(o))) || best;
+      if (best && bestScore < 40) bestScore = 50;
+    }
+
+    if (!best || bestScore < 40) return false;
+
+    try {
+      el.focus?.();
+    } catch {
+      /* ignore */
+    }
+    setNativeValue(el, best.value, { focus: true, blur: true });
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    try {
+      el.blur?.();
+    } catch {
+      /* ignore */
+    }
+    return true;
   }
 
   /**
@@ -3743,8 +3872,9 @@
             if (control && control.tagName !== 'LABEL') {
               const type = (control.type || control.tagName).toLowerCase();
               if (type === 'radio') ok = await fillRadio(control, String(answer), q);
-              else if (control.tagName === 'SELECT') ok = fillSelect(control, String(answer));
-              else if (isComboboxLike(control) || control.getAttribute?.('role') === 'combobox') {
+              else if (control.tagName === 'SELECT') {
+                ok = fillSelect(control, String(answer), q.question);
+              } else if (isComboboxLike(control) || control.getAttribute?.('role') === 'combobox') {
                 ok = await fillCombobox(control, String(answer), q.question);
               } else if (!SKIP_TYPES.has(type)) {
                 ok = await commitTextField(control, String(answer));
@@ -3763,7 +3893,7 @@
       ) {
         if (q.type === 'checkbox') ok = fillCheckboxGroup(el, String(answer));
         else if (q.type === 'radio') ok = await fillRadio(el, String(answer), q);
-        else if (el.tagName === 'SELECT') ok = fillSelect(el, String(answer));
+        else if (el.tagName === 'SELECT') ok = fillSelect(el, String(answer), q.question);
         else if (q.type === 'combobox' || isComboboxLike(el)) {
           // Custom dropdowns need type + click the matching option (not just overwrite text)
           ok = await fillCombobox(el, String(answer), q.question);

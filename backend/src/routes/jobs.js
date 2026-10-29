@@ -7,7 +7,7 @@ import {
   uploadJobInfoText,
   formatJobInfoText,
 } from '../googleDrive.js';
-import { getBearerToken, requireUser, userFromToken } from '../userAuth.js';
+import { getBearerToken, requireOwner, requireUser, userFromToken } from '../userAuth.js';
 
 const router = Router();
 
@@ -134,8 +134,8 @@ router.post('/', async (req, res) => {
 });
 
 router.delete('/:id', (req, res) => {
-  const user = requireUser(req, res);
-  if (!user) return;
+  // Only the owner can remove applied jobs; members can view the shared list.
+  if (!requireOwner(req, res)) return;
   if (!db.deleteJob(req.params.id)) {
     return res.status(404).json({ error: 'Job not found' });
   }
