@@ -278,6 +278,15 @@ async function handleMessage(message, sender = {}) {
       return { ok: true, data };
     }
 
+    case 'PARSE_RESUME_HISTORY': {
+      const { openaiApiKey } = await chrome.storage.sync.get({ openaiApiKey: '' });
+      const data = await apiJson('/api/resume/history', {
+        method: 'POST',
+        body: { ...message.payload, apiKey: openaiApiKey || undefined },
+      });
+      return { ok: true, data };
+    }
+
     case 'SAVE_FIXED_ANSWER': {
       const res = await fetch(`${api}/api/answers/fixed`, {
         method: 'POST',

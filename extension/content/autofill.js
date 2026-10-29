@@ -1941,6 +1941,8 @@
     const fields = document.querySelectorAll('input, textarea, select');
     fields.forEach((el, index) => {
       if (!isFieldCollectible(el)) return;
+      // Work/education entries are filled from the resume (HS.fillHistory), not as Q&A
+      if (isHistoryField(el)) return;
 
       const type = (el.type || el.tagName).toLowerCase();
       if (SKIP_TYPES.has(type)) return;
@@ -2077,7 +2079,16 @@
       questions.push(g);
     });
 
-    return questions;
+    return questions.filter((q) => {
+      if (!q.element) return true;
+      if (isHistoryField(q.element)) return false;
+      // "*"-label rows point at the label; check the control it introduces
+      if (q.type === 'unbound') {
+        const control = findTextControlAfterLabel(q.element) || findControlAfterLabel(q.element);
+        if (control && isHistoryField(control)) return false;
+      }
+      return true;
+    });
   };
 
   /** True when node is only a required star (or star + whitespace). */
@@ -2792,6 +2803,8 @@
 
   HS.captureAnswerFromElement = function captureAnswerFromElement(el) {
     if (!el || el.closest?.('#hs-panel, #hs-dock, #hs-info-dialog, #hs-job-dialog')) return null;
+    // Work/education entries come from the resume — never learn them as fixed answers
+    if (isHistoryField(el)) return null;
 
     // Custom Yes/No buttons (must run before input lookup — buttons aren't inputs)
     const choicePair = captureChoiceButtonClick(el);
@@ -2805,6 +2818,7 @@
         document.querySelector('input[aria-autocomplete][aria-expanded="true"]') ||
         (document.activeElement?.tagName === 'INPUT' ? document.activeElement : null);
       if (combo) {
+        if (isHistoryField(combo)) return null;
         const question =
           groupQuestionFor(combo) || labelFor(combo) || inferQuestionFromOptions([]);
         let answer = normalizeLabel(opt.innerText || opt.getAttribute('aria-label') || '');
@@ -4305,6 +4319,295 @@
     document.addEventListener('change', onInputish, { capture: true, signal: ac.signal });
     document.addEventListener('input', onInputish, { capture: true, signal: ac.signal });
     document.addEventListener('click', onInputish, { capture: true, signal: ac.signal });
+  };
+
+  // ─── Work / education history ───────────────────────────────
+  // Filled from the parsed resume only — never from (or into) fixed answers.
+
+  const WORK_HEADING_RE =
+    /^((work|employment|professional|job)\s+(history|experiences?)|experiences?|(previous|past)\s+(employment|employers?|jobs?))(\s*\d+)?$/i;
+  const EDU_HEADING_RE =
+    /^(education(al)?(\s+(history|background|details))?|academic\s+(history|background)|schools?(\s+attended)?)(\s*\d+)?$/i;
+  const ADD_ENTRY_RE =
+    /^(\+\s*)?add(\s+(another|more|new|a))?(\s+(work\s+)?(experience|employment|job|position|education|school|degree))?\s*\+?$/i;
+  const HISTORY_MAX = { work: 6, education: 4 };
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+  function historyHeadingKind(text) {
+    const t = normalizeLabel(text).replace(/[:*]+$/, '').trim();
+    if (!t || t.length > 40) return null;
+    if (WORK_HEADING_RE.test(t)) return 'work';
+    if (EDU_HEADING_RE.test(t)) return 'education';
+    return null;
+  }
+
+  /** Everything that names a control: label, aria, name/id, placeholder, Workday formField id. */
+  function historyDescriptor(el) {
+    const bits = [
+      labelFor(el),
+      el.getAttribute('aria-label'),
+      el.getAttribute('name'),
+      el.id,
+      el.getAttribute('placeholder'),
+    ];
+    const ff = el.closest('[data-automation-id^="formField-"]');
+    if (ff) {
+      bits.push(
+        ff
+          .getAttribute('data-automation-id')
+          .replace(/^formField-/, '')
+          .replace(/([a-z])([A-Z])/g, '$1 $2')
+      );
+    }
+    return bits
+      .filter(Boolean)
+      .join(' | ')
+      .replace(/[_\[\]-]+/g, ' ')
+      .toLowerCase();
+  }
+
+  /**
+   * Which history slot a control is. Education-specific fields (school, degree, major, GPA)
+   * are recognized anywhere; generic ones (title, location, dates) only inside a
+   * Work/Education section, so e.g. "Available start date" is never treated as history.
+   */
+  function classifyHistoryField(el, d, context) {
+    const type = (el.type || '').toLowerCase();
+    const part = /\bmonth\b|\bmm\b/.test(d) ? 'month' : /\byears?\b|\byyyy\b/.test(d) ? 'year' : 'date';
+    const short = normalizeLabel(labelFor(el)).length <= 60;
+
+    if (short && /\b(school|university|college|institution)\b/.test(d)) return { section: 'education', kind: 'school' };
+    if (short && /\bdegree\b/.test(d) && type !== 'checkbox') return { section: 'education', kind: 'degree' };
+    if (short && /discipline|\bmajor\b|field\s*of\s*study|area\s*of\s*study|specialization|concentration/.test(d)) {
+      return { section: 'education', kind: 'field' };
+    }
+    if (short && /\bgpa\b|grade\s*(point\s*)?average/.test(d)) return { section: 'education', kind: 'gpa' };
+    if (/first\s*year\s*attended/.test(d)) return { section: 'education', kind: 'start', part: 'year' };
+    if (/last\s*year\s*attended/.test(d)) return { section: 'education', kind: 'end', part: 'year' };
+
+    if (!context) return null;
+    if (context === 'work') {
+      if (type === 'checkbox') {
+        return /currently\s+work|current(ly)?\s+(employ|job|role|position)|work\s+here|\bpresent\b/.test(d)
+          ? { section: 'work', kind: 'current' }
+          : null;
+      }
+      if (/\b(company|employer|organi[sz]ation)\b/.test(d)) return { section: 'work', kind: 'company' };
+      if (/description|responsibilit|duties|achievements|summary/.test(d)) return { section: 'work', kind: 'description' };
+      if (/job\s*title|\btitle\b|\bposition\b|\brole\b/.test(d)) return { section: 'work', kind: 'title' };
+      if (/\blocation\b|\bcity\b/.test(d)) return { section: 'work', kind: 'location' };
+    }
+    if (type === 'checkbox') return null;
+    if (/\b(start|from|begin|began|first)\b/.test(d)) return { section: context, kind: 'start', part };
+    if (/\b(end|to|until|finish|graduat\w*|completion|last)\b/.test(d)) return { section: context, kind: 'end', part };
+    return null;
+  }
+
+  /**
+   * Walk the page in document order: section headings set the context, controls are grouped into
+   * entries (a repeated slot or a numbered heading like "Work Experience 2" starts a new entry).
+   */
+  function scanHistory() {
+    const out = {
+      work: { entries: [], addButtons: [] },
+      education: { entries: [], addButtons: [] },
+    };
+    let context = null;
+    const startEntry = (section) => {
+      const list = out[section].entries;
+      if (!list.length || list[list.length - 1].fields.length) list.push({ fields: [], slots: new Set() });
+    };
+    const nodes = document.querySelectorAll(
+      'h1, h2, h3, h4, h5, h6, legend, [role="heading"], [class*="heading" i], [class*="section-title" i], [data-automation-id*="Header"], ' +
+        'button, [role="button"], a, input, select, textarea, [role="combobox"]'
+    );
+    for (const node of nodes) {
+      if (node.closest('#hs-panel, #hs-dock, #hs-info-dialog, #hs-job-dialog')) continue;
+      const tag = node.tagName;
+      const isControl = tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || node.getAttribute('role') === 'combobox';
+
+      if (!isControl) {
+        const text = normalizeLabel(node.innerText || node.textContent || '');
+        if (/^(BUTTON|A)$/.test(tag) || node.getAttribute('role') === 'button') {
+          const label = text || node.getAttribute('aria-label') || '';
+          if (context && ADD_ENTRY_RE.test(label.trim()) && isVisible(node)) out[context].addButtons.push(node);
+          continue;
+        }
+        const kind = historyHeadingKind(text);
+        const realHeading = /^(H[1-6]|LEGEND)$/.test(tag) || node.getAttribute('role') === 'heading';
+        if (kind) {
+          context = kind;
+          // "Work Experience 2" — explicit entry boundary
+          if (/\d+\s*$/.test(text)) startEntry(kind);
+        } else if (realHeading && text.length >= 2 && text.length <= 80 && !historyHeadingKind(text)) {
+          context = null;
+        }
+        continue;
+      }
+
+      const type = (node.type || '').toLowerCase();
+      if (SKIP_TYPES.has(type) || type === 'radio') continue;
+      if (node.getAttribute('role') === 'combobox' && node.tagName !== 'INPUT' && node.querySelector('input')) continue;
+      if (!isFieldCollectible(node)) continue;
+      const slot = classifyHistoryField(node, historyDescriptor(node), context);
+      if (!slot) continue;
+      const section = out[slot.section];
+      const slotKey = `${slot.kind}:${slot.part || ''}`;
+      let entry = section.entries[section.entries.length - 1];
+      if (!entry || entry.slots.has(slotKey)) {
+        section.entries.push({ fields: [], slots: new Set() });
+        entry = section.entries[section.entries.length - 1];
+      }
+      entry.slots.add(slotKey);
+      entry.fields.push({ el: node, kind: slot.kind, part: slot.part || null });
+    }
+    for (const s of Object.values(out)) s.entries = s.entries.filter((e) => e.fields.length);
+    return out;
+  }
+
+  let historyCache = { at: 0, set: new WeakSet() };
+  function historyFieldSet() {
+    if (Date.now() - historyCache.at > 1500) {
+      const set = new WeakSet();
+      try {
+        const scan = scanHistory();
+        for (const s of Object.values(scan)) for (const e of s.entries) for (const f of e.fields) set.add(f.el);
+      } catch {
+        /* ignore */
+      }
+      historyCache = { at: Date.now(), set };
+    }
+    return historyCache.set;
+  }
+
+  /** True for controls owned by a Work/Education history entry (excluded from Q&A + learning). */
+  function isHistoryField(el) {
+    return !!el && historyFieldSet().has(el);
+  }
+  HS.isHistoryField = isHistoryField;
+
+  /** The page has Work/Education entries (or an "Add" button to create them). */
+  HS.hasHistorySections = function hasHistorySections() {
+    const scan = scanHistory();
+    return Object.values(scan).some((s) => s.entries.length || s.addButtons.length);
+  };
+
+  const pad2 = (n) => String(n).padStart(2, '0');
+
+  /** Value(s) for one slot; arrays are tried in order (e.g. degree level, then degree as written). */
+  function historySlotValue(section, entry, field) {
+    const { el, kind, part } = field;
+    switch (kind) {
+      case 'title':
+      case 'company':
+      case 'location':
+      case 'description':
+      case 'school':
+      case 'field':
+      case 'gpa':
+        return entry[kind] || '';
+      case 'degree':
+        return [entry.degreeLevel, entry.degree].filter(Boolean);
+      case 'current':
+        return entry.current ? 'Yes' : 'No';
+      default:
+        break;
+    }
+    if (kind !== 'start' && kind !== 'end') return '';
+    if (kind === 'end' && entry.current) return '';
+    const y = kind === 'start' ? entry.startYear : entry.endYear;
+    const m = section === 'work' ? (kind === 'start' ? entry.startMonth : entry.endMonth) : null;
+    if (part === 'year') return y ? String(y) : '';
+    if (part === 'month') {
+      if (!m) return '';
+      return el.tagName === 'SELECT' || isComboboxLike(el) ? [MONTHS[m - 1], pad2(m), String(m)] : pad2(m);
+    }
+    if (!y) return '';
+    const type = (el.type || '').toLowerCase();
+    const mm = pad2(m || 1);
+    if (type === 'month') return `${y}-${mm}`;
+    if (type === 'date') return `${y}-${mm}-01`;
+    const ph = String(el.getAttribute('placeholder') || '').toLowerCase();
+    if (/mm\s*\/\s*dd\s*\/\s*yyyy/.test(ph)) return `${mm}/01/${y}`;
+    if (/yyyy\s*-\s*mm/.test(ph)) return `${y}-${mm}`;
+    if (/mm\s*\/\s*yy(?!yy)/.test(ph)) return `${mm}/${String(y).slice(2)}`;
+    if (/^\s*yyyy\s*$/.test(ph) || !m) return String(y);
+    return `${mm}/${y}`;
+  }
+
+  async function setHistoryControl(el, value, label) {
+    const candidates = (Array.isArray(value) ? value : [value]).map((v) => String(v || '').trim()).filter(Boolean);
+    if (!candidates.length) return false;
+    if ((el.type || '').toLowerCase() === 'checkbox') return fillCheckbox(el, candidates[0]);
+    for (const v of candidates) {
+      let ok = false;
+      if (el.tagName === 'SELECT') ok = fillSelect(el, v, label);
+      else if (isComboboxLike(el) || el.getAttribute('role') === 'combobox') ok = await fillCombobox(el, v, label);
+      else ok = await commitTextField(el, v);
+      if (ok) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Fill Work/Employment history and Education from the parsed resume.
+   * history: { work: [...], education: [...] } (most recent first). Adds entries via the
+   * section's "Add" button when the resume has more than the form shows. Never overwrites
+   * a value already on the page (e.g. from the site's own resume parser).
+   */
+  HS.fillHistory = async function fillHistory(history, { shouldCancel } = {}) {
+    const result = { filled: 0, entries: [] };
+    for (const section of ['work', 'education']) {
+      const data = (history?.[section] || []).slice(0, HISTORY_MAX[section]);
+      if (!data.length) continue;
+      let scan = scanHistory()[section];
+
+      // Grow the form until it has one entry per resume item
+      for (let guard = 0; scan.entries.length < data.length && guard < HISTORY_MAX[section]; guard++) {
+        const btn = scan.addButtons[scan.addButtons.length - 1];
+        if (!btn || shouldCancel?.()) break;
+        clickOnce(btn);
+        await sleep(600);
+        const next = scanHistory()[section];
+        if (next.entries.length <= scan.entries.length) break;
+        scan = next;
+      }
+
+      const n = Math.min(scan.entries.length, data.length);
+      for (let i = 0; i < n; i++) {
+        if (shouldCancel?.()) return result;
+        const entry = data[i];
+        let filledHere = 0;
+        // Tick "I currently work here" first: it usually hides the end-date fields
+        const fields = scan.entries[i].fields
+          .slice()
+          .sort((a, b) => (a.kind === 'current' ? -1 : 0) - (b.kind === 'current' ? -1 : 0));
+        for (const f of fields) {
+          if (!document.contains(f.el)) continue;
+          if (f.kind !== 'current' && fieldValue(f.el)) continue;
+          const value = historySlotValue(section, entry, f);
+          if (!value || (Array.isArray(value) && !value.length)) continue;
+          if (f.kind === 'current' && !entry.current) continue;
+          const ok = await setHistoryControl(f.el, value, labelFor(f.el));
+          if (ok) {
+            filledHere += 1;
+            f.el.classList?.add('hs-filled');
+          }
+        }
+        result.filled += filledHere;
+        result.entries.push({
+          section,
+          index: i,
+          label:
+            section === 'work'
+              ? [entry.title, entry.company].filter(Boolean).join(' · ')
+              : [entry.degree || entry.degreeLevel, entry.school].filter(Boolean).join(' · '),
+          filled: filledHere > 0,
+        });
+      }
+    }
+    historyCache.at = 0;
+    return result;
   };
 
   HS.findResumeInputs = function findResumeInputs() {

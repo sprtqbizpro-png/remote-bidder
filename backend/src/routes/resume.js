@@ -4,6 +4,8 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { uploadResume, isDriveConnected } from '../googleDrive.js';
+import { resumeTextFromDataUrl, parseResumeHistory } from '../resumeHistory.js';
+import { getStoredOpenAIKey } from './auth.js';
 
 function resolveUploadDir() {
   const preferred = path.join(process.cwd(), 'data', 'uploads');
@@ -97,6 +99,31 @@ router.post('/upload', upload.single('resume'), async (req, res) => {
       }
     }
     res.status(500).json({ error: err.message || 'Upload failed' });
+  }
+});
+
+/**
+ * POST /api/resume/history
+ * Body: { resumeText?, resumeDataUrl?, resumeName?, apiKey? }
+ * Returns the resume's plain text plus structured work / education history for form autofill.
+ */
+router.post('/history', async (req, res) => {
+  try {
+    const { resumeText, resumeDataUrl, resumeName, apiKey } = req.body || {};
+    let text = String(resumeText || '').trim();
+    if (text.length < 40 && resumeDataUrl) {
+      text = await resumeTextFromDataUrl(resumeDataUrl, resumeName);
+    }
+    if (text.length < 40) {
+      return res.status(422).json({ error: 'Could not read text from the resume (scanned image PDF?)' });
+    }
+    const key = apiKey || getStoredOpenAIKey();
+    if (!key) return res.status(400).json({ error: 'OpenAI API key not configured', text });
+    const history = await parseResumeHistory({ text, apiKey: key });
+    res.json({ text, ...history });
+  } catch (err) {
+    console.error('resume history error:', err);
+    res.status(500).json({ error: err.message || 'Resume analysis failed' });
   }
 });
 

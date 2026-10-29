@@ -1694,7 +1694,7 @@
     }
     let any = false;
     progressItemsCache = progressItemsCache.map((item) => {
-      if (item.id === '__resume__') return item;
+      if (item.id === '__resume__' || String(item.id).startsWith('__history_')) return item;
       const match =
         progressQuestionKey(item.question) === qk ||
         (pair.id && item.id === pair.id) ||
@@ -1764,7 +1764,7 @@
 
     let any = false;
     progressItemsCache = progressItemsCache.map((item) => {
-      if (item.id === '__resume__') return item;
+      if (item.id === '__resume__' || String(item.id).startsWith('__history_')) return item;
       const qk = progressQuestionKey(item.question);
       const ov = getChoiceOverride(item.question);
       let st = byId.get(item.id) || byQ.get(qk);
@@ -2386,8 +2386,42 @@
     return '';
   }
 
+  let resumeHistoryCache = null; // { key, data } — one LLM parse per resume
+
+  /**
+   * Structured work / education history parsed from the uploaded resume (server-side, so PDFs work).
+   * Also back-fills lastResumeText for PDFs, whose text the extension cannot read itself.
+   */
+  async function loadResumeHistory() {
+    if (!lastResumeDataUrl && !lastResumeText) await loadSavedResume();
+    if (!lastResumeDataUrl && !lastResumeText) return null;
+    const key = `${lastResumeName || ''}|${(lastResumeDataUrl || '').length}|${(lastResumeText || '').length}`;
+    if (resumeHistoryCache?.key === key) return resumeHistoryCache.data;
+    const hasText = (lastResumeText || '').trim().length >= 40;
+    const res = await send('PARSE_RESUME_HISTORY', {
+      resumeText: hasText ? lastResumeText : '',
+      resumeDataUrl: hasText ? undefined : lastResumeDataUrl,
+      resumeName: lastResumeName || '',
+    });
+    if (!res?.ok) throw new Error(res?.error || 'Resume analysis failed');
+    if (!hasText && res.data?.text) lastResumeText = res.data.text;
+    resumeHistoryCache = {
+      key: `${lastResumeName || ''}|${(lastResumeDataUrl || '').length}|${(lastResumeText || '').length}`,
+      data: res.data,
+    };
+    return res.data;
+  }
+
   async function buildResumeContext() {
     if (!lastResumeText) await loadSavedResume();
+    // PDFs: the extension can't read them — the server extracts the text (cached per resume)
+    if (!lastResumeText && lastResumeDataUrl) {
+      try {
+        await loadResumeHistory();
+      } catch {
+        /* AI answers fall back to profile-only context */
+      }
+    }
     const chunks = [];
     if (lastResumeName) chunks.push(`Resume file: ${lastResumeName}`);
     if (lastResumeText) chunks.push(lastResumeText.slice(0, 12000));
@@ -2742,7 +2776,7 @@
       let resumeInputs = HS.findResumeInputs ? HS.findResumeInputs() : [];
       let host = HS.detectHostResumeAutofill ? HS.detectHostResumeAutofill() : null;
       let collected = HS.collectQuestions();
-      if (!collected.length && !resumeInputs.length && !host) {
+      if (!collected.length && !resumeInputs.length && !host && !HS.hasHistorySections?.()) {
         setStatus('No fillable application questions found on this page.', true);
         setBusy(['hs-autofill'], false);
         return;
@@ -2850,10 +2884,35 @@
 
       if (autofillCancelled) throw new Error('cancelled');
 
+      // Phase 2b: Work / Employment history + Education straight from the resume (not fixed answers)
+      let historyRows = [];
+      if (HS.fillHistory && HS.hasHistorySections?.()) {
+        try {
+          setStatus('Reading work & education history from your resume…', false, 'busy');
+          const history = await loadResumeHistory();
+          if (autofillCancelled) throw new Error('cancelled');
+          if (history && (history.work?.length || history.education?.length)) {
+            setStatus('Filling work & education history from your resume…', false, 'busy');
+            const hist = await HS.fillHistory(history, { shouldCancel: () => autofillCancelled });
+            historyRows = hist.entries.map((e) => ({
+              id: `__history_${e.section}_${e.index}__`,
+              question: `${e.section === 'work' ? 'Work history' : 'Education'} ${e.index + 1}: ${e.label}`,
+              required: false,
+              filled: e.filled,
+              source: e.filled ? 'resume' : 'unmatched',
+            }));
+          }
+        } catch (err) {
+          if (err.message === 'cancelled') throw err;
+          console.warn('History autofill failed', err);
+          setStatus(`Work/education history skipped — ${err.message || 'resume analysis failed'}`, true);
+        }
+      }
+
       // Re-scan after host fill so already-filled fields are recognized
       collected = HS.collectQuestions();
       resumeInputs = HS.findResumeInputs ? HS.findResumeInputs() : [];
-      progressItems = buildProgressSeed(collected, resumeInputs);
+      progressItems = buildProgressSeed(collected, resumeInputs).concat(historyRows);
       // Mark resume row if we attached a file
       const resumeSeed = progressItems.find((p) => p.id === '__resume__');
       if (resumeSeed && resumeFilled > 0) resumeSeed.filled = true;
@@ -2944,7 +3003,7 @@
         filled = typeof result === 'number' ? result : result.filled || 0;
         if (result?.items) {
           progressItems = dedupeProgress(
-            result.items.concat(progressItems.filter((p) => p.id === '__resume__'))
+            result.items.concat(progressItems.filter((p) => p.id === '__resume__' || String(p.id).startsWith('__history_')))
           );
         }
 
