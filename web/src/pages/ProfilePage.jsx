@@ -181,9 +181,13 @@ export default function ProfilePage() {
       }
       setError('');
     } catch (err) {
-      clearSession();
-      setUser(null);
-      setError(err.message || 'Please sign in again.');
+      if (err?.status === 401) {
+        clearSession();
+        setUser(null);
+        setError('Please sign in again.');
+      } else {
+        setError(err.message || 'Could not load profile.');
+      }
     } finally {
       setLoading(false);
     }

@@ -51,13 +51,25 @@ async function apiJson(path, { method = 'GET', body } = {}) {
   const headers = await authHeaders(
     body !== undefined ? { 'Content-Type': 'application/json' } : {}
   );
-  const res = await fetch(`${api}${path}`, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch(`${api}${path}`, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch (err) {
+    const error = new Error(err.message || 'Network error');
+    error.status = 0;
+    error.network = true;
+    throw error;
+  }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  if (!res.ok) {
+    const error = new Error(data.error || `Request failed (${res.status})`);
+    error.status = res.status;
+    throw error;
+  }
   return data;
 }
 
@@ -409,9 +421,22 @@ async function handleMessage(message, sender = {}) {
         const data = await apiJson('/api/auth/me');
         await chrome.storage.local.set({ hsUser: data.user });
         return { ok: true, data };
-      } catch {
-        await chrome.storage.local.remove(['hsAuthToken', 'hsUser']);
-        return { ok: true, data: { user: null, profileComplete: false } };
+      } catch (err) {
+        // Only drop the token when the API rejects it — not on network blips.
+        if (err?.status === 401) {
+          await chrome.storage.local.remove(['hsAuthToken', 'hsUser']);
+          return { ok: true, data: { user: null, profileComplete: false } };
+        }
+        const { hsUser } = await chrome.storage.local.get({ hsUser: null });
+        return {
+          ok: true,
+          data: {
+            user: hsUser,
+            profileComplete: !!hsUser,
+            offline: true,
+            error: err?.message || 'Auth check failed',
+          },
+        };
       }
     }
 

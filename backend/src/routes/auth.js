@@ -4,7 +4,7 @@ import {
   exchangeCode,
   isDriveConnected,
 } from '../googleDrive.js';
-import db from '../db.js';
+import db, { flushDb } from '../db.js';
 import {
   signin,
   logout,
@@ -23,10 +23,12 @@ router.post('/signup', (_req, res) => {
   });
 });
 
-router.post('/signin', (req, res) => {
+router.post('/signin', async (req, res) => {
   try {
     const { email, password } = req.body || {};
     const result = signin({ email, password });
+    // Persist session before responding so other serverless instances can see it.
+    await flushDb();
     res.json({
       ok: true,
       user: result.user,
@@ -38,9 +40,10 @@ router.post('/signin', (req, res) => {
   }
 });
 
-router.post('/signout', (req, res) => {
+router.post('/signout', async (req, res) => {
   const token = getBearerToken(req);
   if (token) logout(token);
+  await flushDb();
   res.json({ ok: true });
 });
 

@@ -8,7 +8,7 @@ import authRouter from './routes/auth.js';
 import extractRouter from './routes/extract.js';
 import profileRouter from './routes/profile.js';
 import membersRouter from './routes/members.js';
-import db, { initDb } from './db.js';
+import db, { initDb, reloadDb, flushDb } from './db.js';
 import { consolidateFixedAnswerRows } from './fixedAnswers.js';
 import { ensureAdminUserFromEnv } from './userAuth.js';
 
@@ -54,12 +54,18 @@ app.use(
 );
 app.use(express.json({ limit: '2mb' }));
 
-/** Ensure DB is ready on every request (required for Vercel cold starts). */
+/** Ensure DB is ready and reloaded on every request (Vercel multi-instance sessions). */
 app.use(async (_req, res, next) => {
   try {
     await initDb();
+    await reloadDb();
     migrateFixedAnswersOnStartup();
     ensureAdminOnce();
+    res.on('finish', () => {
+      flushDb().catch((err) => {
+        console.error('[db] flush after request failed:', err?.message || err);
+      });
+    });
     next();
   } catch (err) {
     console.error('[db] init failed:', err);

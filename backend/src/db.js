@@ -24,7 +24,11 @@ let state = null;
 let readyPromise = null;
 /** @type {((data: object) => Promise<void>)|null} */
 let persistFn = null;
+/** @type {(() => Promise<object>)|null} */
+let loadFn = null;
 let writeQueue = Promise.resolve();
+/** @type {Promise<void>|null} */
+let reloadPromise = null;
 
 function isFsReadonlyError(err) {
   return ['EACCES', 'EPERM', 'EROFS', 'ENOENT'].includes(err?.code);
@@ -135,12 +139,38 @@ function read() {
   return state;
 }
 
+async function persistMerged(snapshot) {
+  if (!persistFn) return;
+  let toSave = structuredClone(snapshot);
+  // Union sessions with the latest durable blob so concurrent instances
+  // don't clobber each other's auth tokens on last-write-wins.
+  if (loadFn) {
+    try {
+      const remote = await loadFn();
+      const byToken = new Map();
+      for (const s of remote?.sessions || []) {
+        if (s?.token && s.expiresAt > Date.now()) byToken.set(s.token, s);
+      }
+      for (const s of toSave.sessions || []) {
+        if (s?.token && s.expiresAt > Date.now()) byToken.set(s.token, s);
+      }
+      toSave = { ...toSave, sessions: [...byToken.values()] };
+      // Keep in-memory sessions in sync with what we persist.
+      if (state) state.sessions = toSave.sessions;
+    } catch (err) {
+      console.warn('[db] session merge before save skipped:', err?.message || err);
+    }
+  }
+  await persistFn(toSave);
+}
+
 function write(data) {
   ensureReady();
   state = data;
   if (!persistFn) return;
+  const snapshot = structuredClone(state);
   writeQueue = writeQueue
-    .then(() => persistFn(structuredClone(state)))
+    .then(() => persistMerged(snapshot))
     .catch((err) => {
       console.error('[db] persist failed:', err?.message || err);
     });
@@ -148,6 +178,25 @@ function write(data) {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+/**
+ * Merge durable store with in-memory sessions so a just-created token
+ * is not lost when another instance already persisted a newer blob.
+ */
+function mergeLoadedState(local, remote) {
+  const base = { ...structuredClone(DEFAULT), ...(remote || {}) };
+  const byToken = new Map();
+  for (const s of base.sessions || []) {
+    if (s?.token && s.expiresAt > Date.now()) byToken.set(s.token, s);
+  }
+  for (const s of local?.sessions || []) {
+    if (s?.token && s.expiresAt > Date.now() && !byToken.has(s.token)) {
+      byToken.set(s.token, s);
+    }
+  }
+  base.sessions = [...byToken.values()];
+  return base;
 }
 
 /**
@@ -172,6 +221,7 @@ export async function initDb() {
       ? createPostgresPersist(databaseUrl)
       : createFilePersist(resolveFileDbPath());
     persistFn = (data) => backend.save(data);
+    loadFn = () => backend.load();
     state = await backend.load();
     console.log(
       databaseUrl
@@ -190,6 +240,30 @@ export async function initDb() {
 /** Wait for any queued persist operations (useful for migrate scripts). */
 export async function flushDb() {
   await writeQueue;
+}
+
+/**
+ * Re-read durable store (Postgres/file) so serverless instances see
+ * sessions created on another instance. Call once per request.
+ */
+export async function reloadDb() {
+  await initDb();
+  await flushDb();
+  if (!loadFn) return state;
+  if (reloadPromise) {
+    await reloadPromise;
+    return state;
+  }
+  reloadPromise = (async () => {
+    const fresh = await loadFn();
+    state = mergeLoadedState(state, fresh);
+  })();
+  try {
+    await reloadPromise;
+  } finally {
+    reloadPromise = null;
+  }
+  return state;
 }
 
 export const db = {

@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import { api } from '../api.js';
-import { clearSession, getToken, setSession } from '../auth.js';
+import { clearSession, getStoredUser, getToken, setSession } from '../auth.js';
 
 export default function RequireAuth() {
   const location = useLocation();
   const [status, setStatus] = useState(() => (getToken() ? 'checking' : 'guest'));
 
+  // Validate the session once per mount (not on every route change).
   useEffect(() => {
     let cancelled = false;
     const token = getToken();
@@ -20,15 +21,26 @@ export default function RequireAuth() {
         const me = await api.me();
         if (me?.user) setSession({ token, user: me.user });
         if (!cancelled) setStatus('authed');
-      } catch {
-        clearSession();
-        if (!cancelled) setStatus('guest');
+      } catch (err) {
+        if (cancelled) return;
+        // Real auth rejection → sign in again.
+        if (err?.status === 401) {
+          clearSession();
+          setStatus('guest');
+          return;
+        }
+        // Network / 5xx: keep existing session so a blip doesn't force logout.
+        if (getToken() && getStoredUser()) {
+          setStatus('authed');
+          return;
+        }
+        setStatus('guest');
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [location.pathname]);
+  }, []);
 
   if (status === 'checking') {
     return (

@@ -12,15 +12,30 @@ async function request(path, options = {}) {
   };
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers,
-  });
-  const data = await res.json().catch(() => ({}));
-  if (res.status === 401) {
-    clearSession();
+  let res;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers,
+    });
+  } catch (err) {
+    const error = new Error(err.message || 'Network error');
+    error.status = 0;
+    error.network = true;
+    throw error;
   }
-  if (!res.ok) throw new Error(data.error || res.statusText || 'Request failed');
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const error = new Error(data.error || res.statusText || 'Request failed');
+    error.status = res.status;
+    // Only drop the local session when the auth endpoint rejects the token.
+    // Other 401s / network blips must not force a sign-in loop.
+    if (res.status === 401 && path === '/api/auth/me' && token) {
+      clearSession();
+    }
+    throw error;
+  }
   return data;
 }
 
