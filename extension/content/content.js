@@ -170,10 +170,76 @@
     });
   }
 
+  /*
+   * Autofill heartbeat. Network steps (answer matching, AI writing, resume analysis) take
+   * seconds with nothing changing on screen, which read as "stuck". While autofill runs, every
+   * busy status becomes the current step and is shown with a live elapsed counter (and
+   * "n of m" while fields are being filled) in both the status line and the progress board.
+   */
+  let autofillTicker = null; // { phase, startedAt, done, total, timer }
+
+  function tickerText() {
+    if (!autofillTicker) return '';
+    const secs = Math.max(0, Math.round((Date.now() - autofillTicker.startedAt) / 1000));
+    const phase = String(autofillTicker.phase || 'Autofilling').replace(/[.\u2026]+$/g, '');
+    const count =
+      autofillTicker.total > 0 ? ` (${Math.min(autofillTicker.done, autofillTicker.total)}/${autofillTicker.total})` : '';
+    return `${phase}${count}… ${secs}s`;
+  }
+
+  function paintTicker() {
+    if (!autofillTicker) return;
+    const text = tickerText();
+    const el = document.getElementById('hs-status');
+    if (el && !el.classList.contains('hs-error')) {
+      el.textContent = text;
+      el.classList.remove('hs-ok');
+      el.classList.add('hs-busy');
+      lastStatusText = text;
+    }
+    const root = document.getElementById('hs-progress-view');
+    if (root && !root.hidden) {
+      const state = root.querySelector('.jr-progress-state');
+      if (state) state.textContent = text;
+      const meta = root.querySelector('.jr-progress-meta');
+      if (meta) meta.textContent = `working · ${text}`;
+    }
+  }
+
+  function startAutofillTicker(phase = 'Preparing autofill') {
+    stopAutofillTicker();
+    autofillTicker = { phase, startedAt: Date.now(), done: 0, total: 0, timer: null };
+    autofillTicker.timer = setInterval(paintTicker, 1000);
+    paintTicker();
+  }
+
+  function setAutofillCount(done, total) {
+    if (!autofillTicker) return;
+    autofillTicker.done = done;
+    autofillTicker.total = total;
+    paintTicker();
+  }
+
+  function stopAutofillTicker() {
+    if (autofillTicker?.timer) clearInterval(autofillTicker.timer);
+    autofillTicker = null;
+  }
+
   function setStatus(msg, isError, tone) {
     const el = document.getElementById('hs-status');
     if (!el) return;
     if (isContextLostError(msg)) msg = CONTEXT_LOST_MSG;
+    if (autofillTicker && tone === 'busy' && !isError) {
+      // A new step: reset the "n of m" counter unless the step sets it again
+      autofillTicker.phase = msg || autofillTicker.phase;
+      autofillTicker.done = 0;
+      autofillTicker.total = 0;
+      el.classList.remove('hs-error');
+      paintTicker();
+      return;
+    }
+    // The final summary ends the heartbeat (an error mid-run just pauses it until the next step)
+    if (autofillTicker && tone === 'ok') stopAutofillTicker();
     lastStatusText = msg || '';
     el.textContent = msg || '';
     el.classList.remove('hs-error', 'hs-ok', 'hs-busy');
@@ -2691,6 +2757,7 @@
       autofillCancelled = true;
       cancelFrameAutofill();
       setBusy(['hs-autofill'], false);
+      stopAutofillTicker();
       setStatus('Autofill cancelled', false);
     }
     progressExpanded = false;
@@ -2721,7 +2788,7 @@
     root.classList.toggle('is-filling', !waiting);
     const state = root.querySelector('.jr-progress-state');
     if (state) {
-      state.textContent = label;
+      state.textContent = autofillTicker ? tickerText() : label;
       state.classList.add('is-animated');
     }
     const meta = root.querySelector('.jr-progress-meta');
@@ -3034,6 +3101,7 @@
   }
 
   async function runAutofill({ afterApply = false } = {}) {
+    if (!afterApply) startAutofillTicker('Preparing autofill');
     autofillCancelled = false;
     stopAnswerLearningWatch();
     setBusy(['hs-autofill'], true);
@@ -3211,13 +3279,14 @@
           resumeContext,
         });
       // Never fill cover letters — leave those for the user
+      // Unanswered questions stay in the list (with no answer) so they never borrow another
+      // question's answer; cover letters are blanked — those are left for the user.
       const fillableAnswers = (list) =>
-        list.filter((a) => {
-          if (!a.answer) return false;
-          if (HS.isCoverLetterField?.(a.question, { placeholder: a.placeholder })) return false;
-          if (/cover\s*letter/i.test(a.question || '')) return false;
-          return true;
-        });
+        list.map((a) =>
+          HS.isCoverLetterField?.(a.question, { placeholder: a.placeholder }) || /cover\s*letter/i.test(a.question || '')
+            ? { ...a, answer: '' }
+            : a
+        );
       // Ask for answers now: the server matches/generates while history fields are being filled
       const asked = HS.collectQuestions();
       const generatePromise = asked.length ? generateFor(asked) : null;
@@ -3310,7 +3379,16 @@
             waiting: false,
           });
         };
-        const result = await HS.fillAnswers(answers, { onItem: onFillItem });
+        setStatus('Filling fields on the page', false, 'busy');
+        const fillSeen = new Set();
+        setAutofillCount(0, answers.length);
+        const result = await HS.fillAnswers(answers, {
+          onItem: (item) => {
+            fillSeen.add(item.id || progressQuestionKey(item.question));
+            setAutofillCount(fillSeen.size, Math.max(answers.length, fillSeen.size));
+            onFillItem(item);
+          },
+        });
         if (autofillCancelled) throw new Error('cancelled');
         filled = typeof result === 'number' ? result : result.filled || 0;
         if (result?.items) {
@@ -3345,6 +3423,7 @@
           const freshIds = new Set(fresh.map((q) => q.id));
           const freshKeys = new Set(fresh.map((q) => progressQuestionKey(q.question)));
           await HS.fillAnswers(fillableAnswers(moreAnswers), {
+            onlyListed: true,
             // Only report the new questions; earlier rows keep their state
             onItem: (item) => {
               if (!freshIds.has(item.id) && !freshKeys.has(progressQuestionKey(item.question))) return;
@@ -3454,6 +3533,7 @@
             return;
           }
           const retry = await HS.fillAnswers(subset, {
+            onlyListed: true,
             onItem: (item) => {
               if (!item?.filled) return;
               const qk = progressQuestionKey(item.question);
@@ -3493,6 +3573,7 @@
         setStatus(err.message || 'Autofill failed', true);
       }
     } finally {
+      if (!afterApply) stopAutofillTicker();
       setBusy(['hs-autofill'], false);
       progressBusy = false;
       autofillCancelled = false;

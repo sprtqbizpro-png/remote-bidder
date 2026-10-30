@@ -1294,13 +1294,17 @@
   }
 
   /** Match API answer row to a live field even when ids / exact labels drift. */
-  function findAnswerRecord(q, answers, byId, byQuestion) {
+  function findAnswerRecord(q, answers, byId, byQuestion, { strict = false } = {}) {
     if (!q || !answers?.length) return null;
-    let rec = byId.get(q.id);
-    if (rec?.answer) return rec;
     const qn = normalizeLabel(q.question).toLowerCase();
-    rec = byQuestion.get(qn);
-    if (rec?.answer) return rec;
+    // A question with its own record keeps it — even when that answer is empty. Borrowing another
+    // question's answer through the loose matches below put e.g. City into "Which city…?".
+    const own = byId.get(q.id) || byQuestion.get(qn);
+    if (own) return own.answer ? own : null;
+    let rec = null;
+    // Partial answer lists (follow-ups, retries): only the question each answer was made for.
+    // The loose fallbacks below would hand e.g. "If yes, which city?" to the City field.
+    if (strict) return null;
 
     for (const a of answers) {
       if (!a?.answer) continue;
@@ -3613,8 +3617,10 @@
    * Quiet pass: sync every filled text/textarea into React state once.
    * Fixes "Missing entry for required field" on Submit without retyping or clicking.
    */
-  async function retouchFilledTextFields() {
-    const nodes = Array.from(document.querySelectorAll('input, textarea')).filter((el) => {
+  async function retouchFilledTextFields(only = null) {
+    const pool = only ? Array.from(only) : Array.from(document.querySelectorAll('input, textarea'));
+    const nodes = pool.filter((el) => {
+      if (!el || !document.contains(el)) return false;
       if (el.closest('#hs-panel, #hs-dock, #hs-info-dialog, #hs-job-dialog')) return false;
       if (!isFieldCollectible(el)) return false;
       const type = (el.type || el.tagName).toLowerCase();
@@ -3843,8 +3849,17 @@
     return n;
   };
 
+  /**
+   * Fill the page from answer records.
+   * opts.onlyListed — the list is partial (follow-up questions, retries): touch only questions that
+   *   have their own record in it and skip the page-wide sweeps (sponsorship, consent boxes).
+   * Fields that already hold a value are never rewritten: rewriting a filled React / typeahead
+   * field is what made answers flash empty and refill (or end up empty).
+   */
   HS.fillAnswers = async function fillAnswers(answers, opts = {}) {
     const onItem = typeof opts.onItem === 'function' ? opts.onItem : null;
+    const onlyListed = !!opts.onlyListed;
+    const written = new Set();
     const list = Array.isArray(answers) ? answers : [];
     const byId = new Map(list.map((a) => [a.id, a]));
     const byQuestion = new Map(
@@ -3857,7 +3872,8 @@
     const handledConsent = new Set();
 
     for (const q of questions) {
-      const rec = findAnswerRecord(q, list, byId, byQuestion);
+      const rec = findAnswerRecord(q, list, byId, byQuestion, { strict: onlyListed });
+      if (onlyListed && !rec) continue;
       const intent =
         rec?.intent || guessQuestionIntent(q.question) || null;
       const isSponsorship =
@@ -3947,7 +3963,19 @@
         answer !== '' &&
         !HS.isCoverLetterField?.(q.question, q)
       ) {
-        if (q.type === 'checkbox') ok = fillCheckboxGroup(el, String(answer));
+        const isTextLike =
+          q.type !== 'checkbox' && q.type !== 'radio' && !['checkbox', 'radio', 'file'].includes((el.type || '').toLowerCase());
+        const current = isTextLike
+          ? q.type === 'combobox' || isComboboxLike(el)
+            ? comboboxCommittedValue(el) || fieldValue(el)
+            : fieldValue(el)
+          : '';
+        if (current) {
+          // Already answered (earlier pass, the site's resume autofill, or the user): keep it
+          ok = true;
+          if (!answersMatch(String(answer), current)) fillSource = 'page';
+          el.classList.add('hs-filled');
+        } else if (q.type === 'checkbox') ok = fillCheckboxGroup(el, String(answer));
         else if (q.type === 'radio') ok = await fillRadio(el, String(answer), q);
         else if (el.tagName === 'SELECT') ok = fillSelect(el, String(answer), q.question);
         else if (q.type === 'combobox' || isComboboxLike(el)) {
@@ -3960,6 +3988,7 @@
         } else {
           // Text / email / textarea — commit into React form state (not just DOM .value)
           ok = await commitTextField(el, String(answer));
+          if (ok) written.add(el);
         }
         if (ok) {
           filled += 1;
@@ -4017,7 +4046,7 @@
       if (item.filled || item.id === '__resume__') continue;
       const q = questions.find((x) => x.id === item.id || x.question === item.question);
       if (!q) continue;
-      const rec = findAnswerRecord(q, list, byId, byQuestion);
+      const rec = findAnswerRecord(q, list, byId, byQuestion, { strict: onlyListed });
       const isSponsorship =
         item.intent === 'sponsorship' ||
         isSponsorshipQuestion(q.question) ||
@@ -4070,7 +4099,7 @@
     }
 
     // Final hard guarantee: every sponsorship Yes/No on the page → No
-    if (findSponsorshipChoicePairs().length) {
+    if (!onlyListed && findSponsorshipChoicePairs().length) {
       await settleUi(200);
       await forceAllSponsorshipNos();
     }
@@ -4095,6 +4124,7 @@
 
     // Sweep remaining agree/terms boxes not listed as collected questions
     document.querySelectorAll('input[type="checkbox"]').forEach((el, index) => {
+      if (onlyListed) return;
       if (handledConsent.has(el)) return;
       if (el.closest('#hs-panel, #hs-dock, #hs-info-dialog, #hs-job-dialog')) return;
       if (el.disabled || el.checked) return;
@@ -4116,9 +4146,12 @@
       onItem?.(item, items);
     });
 
-    // Touch all filled text/textarea so Submit validation sees React "touched" state
-    await settleUi(150);
-    await retouchFilledTextFields();
+    // Touch the text fields written in this call so Submit validation sees React "touched" state
+    // (only those: re-firing input on every filled field re-opened typeaheads and cleared them)
+    if (written.size) {
+      await settleUi(150);
+      await retouchFilledTextFields(written);
+    }
 
     const uniqueItems = HS.dedupeQuestionItems(items);
     return { filled, items: uniqueItems, total: uniqueItems.length };

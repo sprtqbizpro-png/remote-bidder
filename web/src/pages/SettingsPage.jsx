@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
+import { getStoredUser } from '../auth.js';
 
 const MASKED_KEY = '••••••••••••••••••••••••';
 
@@ -17,6 +18,9 @@ export default function SettingsPage() {
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
   const [savingKey, setSavingKey] = useState(false);
+  const isOwner = !!getStoredUser()?.isOwner;
+  // { id, question, answer, saving } while the owner edits a fixed answer
+  const [editing, setEditing] = useState(null);
 
   async function refresh() {
     try {
@@ -100,19 +104,35 @@ export default function SettingsPage() {
     await refresh();
   }
 
-  async function updateFixedAnswer(item, nextAnswer) {
-    const trimmed = String(nextAnswer || '').trim();
-    if (!trimmed || trimmed === item.answer) return;
+  function startEdit(item) {
+    setEditing({ id: item.id, question: item.questionPattern, answer: item.answer, saving: false });
+    setMsg('');
+    setError('');
+  }
+
+  async function saveEdit(item) {
+    if (!editing) return;
+    const answerText = String(editing.answer || '').trim();
+    const questionText = String(editing.question || '').trim();
+    if (!answerText) {
+      setError('Answer cannot be empty.');
+      return;
+    }
+    if (!item.meaningGrouped && !questionText) {
+      setError('Question cannot be empty.');
+      return;
+    }
+    setEditing((e) => ({ ...e, saving: true }));
     try {
-      await api.saveFixedAnswer({
-        questionPattern: item.questionPattern,
-        answer: trimmed,
-        intent: item.intent || undefined,
-        questionKey: item.questionKey,
+      const updated = await api.updateFixedAnswer(item.id, {
+        answer: answerText,
+        ...(item.meaningGrouped ? {} : { questionPattern: questionText }),
       });
+      setFixed((prev) => prev.map((x) => (x.id === item.id ? { ...x, ...updated } : x)));
+      setEditing(null);
       setMsg('Answer updated.');
-      await refresh();
     } catch (err) {
+      setEditing((e) => (e ? { ...e, saving: false } : e));
       setError(err.message || 'Could not update answer.');
     }
   }
@@ -300,6 +320,53 @@ export default function SettingsPage() {
           <ul className="jr-fixed-list">
             {fixed.map((item) => (
               <li key={item.id} className={item.meaningGrouped || item.intent ? 'jr-fixed-meaning' : undefined}>
+                {editing?.id === item.id ? (
+                  <form
+                    className="jr-fixed-edit"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      saveEdit(item);
+                    }}
+                  >
+                    {item.meaningGrouped ? (
+                      <strong title="Grouped by meaning — the label is fixed">{item.questionPattern}</strong>
+                    ) : (
+                      <label>
+                        <span>Question</span>
+                        <input
+                          value={editing.question}
+                          onChange={(e) => setEditing((s) => ({ ...s, question: e.target.value }))}
+                          aria-label="Question"
+                        />
+                      </label>
+                    )}
+                    <label>
+                      <span>Answer</span>
+                      <textarea
+                        rows={2}
+                        value={editing.answer}
+                        autoFocus
+                        onChange={(e) => setEditing((s) => ({ ...s, answer: e.target.value }))}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape') setEditing(null);
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            saveEdit(item);
+                          }
+                        }}
+                        aria-label={`Answer for ${item.questionPattern}`}
+                      />
+                    </label>
+                    <div className="jr-fixed-edit-actions">
+                      <button type="submit" className="jr-settings-btn jr-settings-btn-primary" disabled={editing.saving}>
+                        {editing.saving ? 'Saving…' : 'Save'}
+                      </button>
+                      <button type="button" className="jr-settings-btn" onClick={() => setEditing(null)} disabled={editing.saving}>
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                ) : (
                 <div className="jr-fixed-item-main">
                   <div className="jr-fixed-item-title">
                     <strong>{item.questionPattern}</strong>
@@ -312,27 +379,25 @@ export default function SettingsPage() {
                       </span>
                     ) : null}
                   </div>
-                  <input
-                    className="jr-fixed-answer-input"
-                    defaultValue={item.answer}
-                    key={`${item.id}:${item.answer}`}
-                    aria-label={`Answer for ${item.questionPattern}`}
-                    onBlur={(e) => updateFixedAnswer(item, e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        e.currentTarget.blur();
-                      }
-                    }}
-                  />
+                  <p className="jr-fixed-answer">{item.answer}</p>
                 </div>
-                <button
-                  type="button"
-                  className="jr-fixed-delete"
-                  onClick={() => removeFixed(item.id)}
-                >
-                  Delete
-                </button>
+                )}
+                {editing?.id !== item.id && (
+                  <div className="jr-fixed-actions">
+                    {isOwner && (
+                      <button type="button" className="jr-fixed-edit-btn" onClick={() => startEdit(item)}>
+                        Edit
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="jr-fixed-delete"
+                      onClick={() => removeFixed(item.id)}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                )}
               </li>
             ))}
             {fixed.length === 0 && (

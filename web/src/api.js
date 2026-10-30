@@ -44,12 +44,16 @@ export const api = {
   listJobs: () => request('/api/jobs'),
   getJob: (id) => request(`/api/jobs/${id}`),
   deleteJob: (id) => request(`/api/jobs/${id}`, { method: 'DELETE' }),
+  updateJob: (id, payload) =>
+    request(`/api/jobs/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   listFixedAnswers: () => request('/api/answers/fixed'),
   saveFixedAnswer: (payload) =>
     request('/api/answers/fixed', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  updateFixedAnswer: (id, payload) =>
+    request(`/api/answers/fixed/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteFixedAnswer: (id) =>
     request(`/api/answers/fixed/${id}`, { method: 'DELETE' }),
   googleStatus: () => request('/api/auth/google/status'),

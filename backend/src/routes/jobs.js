@@ -136,6 +136,30 @@ router.post('/', async (req, res) => {
   res.status(201).json(mapped);
 });
 
+/** Any signed-in member can correct a saved job's title / company. */
+router.patch('/:id', async (req, res) => {
+  if (!requireUser(req, res)) return;
+  const { companyName, roleName } = req.body || {};
+  const patch = {};
+  if (companyName != null) {
+    const v = String(companyName).trim();
+    if (!v) return res.status(400).json({ error: 'Company cannot be empty' });
+    patch.company_name = v.slice(0, 200);
+  }
+  if (roleName != null) {
+    const v = String(roleName).trim();
+    if (!v) return res.status(400).json({ error: 'Job title cannot be empty' });
+    patch.role_name = v.slice(0, 200);
+  }
+  if (!Object.keys(patch).length) {
+    return res.status(400).json({ error: 'companyName or roleName is required' });
+  }
+  const row = db.updateJob(req.params.id, patch);
+  if (!row) return res.status(404).json({ error: 'Job not found' });
+  await flushDb();
+  res.json(mapJob(row));
+});
+
 router.delete('/:id', async (req, res) => {
   // Only the owner can remove applied jobs; members can view the shared list.
   if (!requireOwner(req, res)) return;

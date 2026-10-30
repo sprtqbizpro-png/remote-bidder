@@ -131,8 +131,10 @@
         resumeContext,
       });
     const fillable = (list) =>
-      list.filter(
-        (a) => a.answer && !HS.isCoverLetterField?.(a.question, { placeholder: a.placeholder }) && !/cover\s*letter/i.test(a.question || '')
+      list.map((a) =>
+        HS.isCoverLetterField?.(a.question, { placeholder: a.placeholder }) || /cover\s*letter/i.test(a.question || '')
+          ? { ...a, answer: '' }
+          : a
       );
     const asked = HS.collectQuestions();
     const pending = asked.length ? generateFor(asked) : null;
@@ -172,7 +174,7 @@
         fresh.forEach((q) => askedKeys.add(questionKey(q.question)));
         const more = await generateFor(fresh);
         if (!more?.ok) break;
-        const r2 = await HS.fillAnswers(fillable(more.data.answers || []), { onItem: upsert });
+        const r2 = await HS.fillAnswers(fillable(more.data.answers || []), { onItem: upsert, onlyListed: true });
         filled += r2?.filled || 0;
       }
     }

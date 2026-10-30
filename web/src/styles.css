@@ -4061,3 +4061,92 @@ main {
     grid-template-columns: 1fr;
   }
 }
+
+/* Inline edit: applied job title / company (jobs list) */
+.jr-table-role-edit {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 220px;
+  flex: 1;
+}
+.jr-table-role-edit input {
+  font: inherit;
+  font-size: 0.86rem;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+}
+.jr-table-role-edit input:focus {
+  outline: 2px solid #1f9d75;
+  outline-offset: 0;
+}
+.jr-table-role-edit-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+.jr-table-role-edit-error {
+  font-size: 0.78rem;
+  color: #c0392b;
+}
+
+/* Fixed answers: owner edit */
+.jr-fixed-answer {
+  margin: 0.25rem 0 0;
+  font-size: 0.86rem;
+  color: var(--ink-soft);
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.jr-fixed-actions {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  flex-shrink: 0;
+}
+.jr-fixed-edit-btn {
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #1a6b55;
+  cursor: pointer;
+  padding: 0;
+}
+.jr-fixed-edit-btn:hover {
+  text-decoration: underline;
+}
+.jr-fixed-edit {
+  display: grid;
+  gap: 0.5rem;
+  flex: 1;
+}
+.jr-fixed-edit label {
+  display: grid;
+  gap: 0.2rem;
+}
+.jr-fixed-edit label span {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.jr-fixed-edit input,
+.jr-fixed-edit textarea {
+  font: inherit;
+  font-size: 0.88rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  resize: vertical;
+}
+.jr-fixed-edit-actions {
+  display: flex;
+  gap: 0.5rem;
+}

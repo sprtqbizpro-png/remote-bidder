@@ -350,6 +350,19 @@ export const db = {
     return data.applied_jobs[idx];
   },
 
+  /** Patch an applied job's editable fields (company / role). */
+  updateJob(id, patch = {}) {
+    const data = read();
+    const job = data.applied_jobs.find((j) => j.id === id);
+    if (!job) return null;
+    for (const k of ['company_name', 'role_name']) {
+      if (patch[k] != null) job[k] = String(patch[k]);
+    }
+    job.updated_at = nowIso();
+    write(data);
+    return job;
+  },
+
   deleteJob(id) {
     const data = read();
     const before = data.applied_jobs.length;
@@ -407,14 +420,22 @@ export const db = {
   },
 
   /** Update an existing fixed answer's value and/or record another phrasing for it. */
-  updateFixedAnswer(id, { answer, alias } = {}) {
+  updateFixedAnswer(id, { answer, alias, question_pattern } = {}) {
     const data = read();
     const row = data.fixed_answers.find((a) => a.id === id);
     if (!row) return null;
     const aliases = mergeAliases(row.aliases, alias ? [alias] : []);
     const nextAnswer = answer != null ? String(answer) : row.answer;
-    if (nextAnswer === row.answer && aliases.length === (row.aliases || []).length) return row;
+    const nextPattern = question_pattern != null ? String(question_pattern) : row.question_pattern;
+    if (
+      nextAnswer === row.answer &&
+      nextPattern === row.question_pattern &&
+      aliases.length === (row.aliases || []).length
+    ) {
+      return row;
+    }
     row.answer = nextAnswer;
+    row.question_pattern = nextPattern;
     row.aliases = aliases;
     row.updated_at = nowIso();
     write(data);

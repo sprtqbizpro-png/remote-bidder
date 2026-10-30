@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import db from '../db.js';
+import db, { flushDb } from '../db.js';
 import { generateAnswer } from '../openai.js';
 import { getStoredOpenAIKey } from './auth.js';
-import { getBearerToken, userFromToken, sharedProfileUserId } from '../userAuth.js';
+import { getBearerToken, userFromToken, sharedProfileUserId, requireOwner } from '../userAuth.js';
 import { profileToAnswerPairs } from '../profileSync.js';
 import {
   isRepetitiveQA,
@@ -291,6 +291,27 @@ router.post('/fixed/bulk', async (req, res) => {
     console.error('bulk save fixed answers error:', err);
     res.status(500).json({ error: err.message || 'Bulk save failed' });
   }
+});
+
+/** Owner edits a saved answer (and optionally its question wording). */
+router.put('/fixed/:id', async (req, res) => {
+  if (!requireOwner(req, res)) return;
+  const { answer, questionPattern } = req.body || {};
+  if (answer == null || !String(answer).trim()) {
+    return res.status(400).json({ error: 'answer is required' });
+  }
+  const existing = db.listFixedAnswers().find((r) => r.id === req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const patch = { answer: String(answer).trim().slice(0, 500) };
+  // Meaning-grouped rows (Email, Gender, Sponsorship…) keep their canonical label
+  if (questionPattern != null && !isCollapsibleIntent(existing.intent)) {
+    const q = normalizeQuestion(questionPattern);
+    if (!q) return res.status(400).json({ error: 'Question cannot be empty' });
+    patch.question_pattern = q.slice(0, 200);
+  }
+  const row = db.updateFixedAnswer(req.params.id, patch);
+  await flushDb();
+  res.json(mapFixed(row));
 });
 
 router.delete('/fixed/:id', (req, res) => {

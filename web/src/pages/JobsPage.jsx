@@ -140,6 +140,8 @@ export default function JobsPage() {
   const [tab, setTab] = useState('applied');
   const [page, setPage] = useState(1);
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
+  // { id, roleName, companyName, saving, error } while a row is being edited (any member)
+  const [editing, setEditing] = useState(null);
 
   function patchFilter(patch) {
     setFilters((prev) => ({ ...prev, ...patch }));
@@ -305,6 +307,28 @@ export default function JobsPage() {
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
   }, [page, totalPages]);
+
+  function startEdit(job) {
+    setEditing({ id: job.id, roleName: job.roleName || '', companyName: job.companyName || '', saving: false, error: '' });
+  }
+
+  async function saveEdit() {
+    if (!editing) return;
+    const roleName = editing.roleName.trim();
+    const companyName = editing.companyName.trim();
+    if (!roleName || !companyName) {
+      setEditing((e) => ({ ...e, error: 'Job title and company are required.' }));
+      return;
+    }
+    setEditing((e) => ({ ...e, saving: true, error: '' }));
+    try {
+      const updated = await api.updateJob(editing.id, { roleName, companyName });
+      setJobs((prev) => prev.map((j) => (j.id === updated.id ? { ...j, ...updated } : j)));
+      setEditing(null);
+    } catch (err) {
+      setEditing((e) => (e ? { ...e, saving: false, error: err.message || 'Could not save.' } : e));
+    }
+  }
 
   async function handleDelete(id) {
     if (!confirm('Remove this applied job from King Star?')) return;
@@ -519,12 +543,48 @@ export default function JobsPage() {
                           <div className="jr-job-logo jr-table-logo" aria-hidden="true">
                             {initials(job.companyName)}
                           </div>
+                          {editing?.id === job.id ? (
+                            <form
+                              className="jr-table-role-edit"
+                              onSubmit={(e) => {
+                                e.preventDefault();
+                                saveEdit();
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Escape') setEditing(null);
+                              }}
+                            >
+                              <input
+                                value={editing.roleName}
+                                onChange={(e) => setEditing((s) => ({ ...s, roleName: e.target.value }))}
+                                placeholder="Job title"
+                                aria-label="Job title"
+                                autoFocus
+                              />
+                              <input
+                                value={editing.companyName}
+                                onChange={(e) => setEditing((s) => ({ ...s, companyName: e.target.value }))}
+                                placeholder="Company"
+                                aria-label="Company"
+                              />
+                              <div className="jr-table-role-edit-actions">
+                                <button type="submit" className="jr-table-btn jr-table-btn-primary" disabled={editing.saving}>
+                                  {editing.saving ? 'Saving…' : 'Save'}
+                                </button>
+                                <button type="button" className="jr-table-btn jr-table-btn-ghost" onClick={() => setEditing(null)} disabled={editing.saving}>
+                                  Cancel
+                                </button>
+                              </div>
+                              {editing.error ? <span className="jr-table-role-edit-error">{editing.error}</span> : null}
+                            </form>
+                          ) : (
                           <div className="jr-table-role-text">
                             <Link to={`/jobs/${job.id}`} className="jr-table-role-link">
                               {job.roleName}
                             </Link>
                             <span className="jr-table-company">{job.companyName}</span>
                           </div>
+                          )}
                         </div>
                       </td>
                       <td className="jr-td-created-by">
@@ -574,6 +634,16 @@ export default function JobsPage() {
                             >
                               Posting
                             </a>
+                          ) : null}
+                          {editing?.id !== job.id ? (
+                            <button
+                              type="button"
+                              className="jr-table-btn jr-table-btn-ghost"
+                              onClick={() => startEdit(job)}
+                              aria-label={`Edit ${job.roleName}`}
+                            >
+                              Edit
+                            </button>
                           ) : null}
                           {canRemoveJobs ? (
                             <button
