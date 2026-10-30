@@ -170,6 +170,24 @@
     });
   }
 
+  /**
+   * "Add a new job" in progress: lock the extract buttons and the job card below them
+   * (card dimmed, Copy / Edit / Reset disabled) so the half-extracted job can't be edited,
+   * copied or cleared mid-run.
+   */
+  function setAddJobBusy(busy) {
+    setBusy(['hs-extract', 'hs-extract-ai', 'hs-add-job', 'hs-reset', 'hs-edit-job', 'hs-copy-job'], busy);
+    for (const id of ['hs-job-card', 'hs-job-toolbar']) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      el.classList.toggle('is-busy', !!busy);
+      if (busy) el.setAttribute('aria-busy', 'true');
+      else el.removeAttribute('aria-busy');
+    }
+    // Copy has its own rule (needs a title or description) — restore it from the card state
+    if (!busy) syncJobCard();
+  }
+
   /*
    * Autofill heartbeat. Network steps (answer matching, AI writing, resume analysis) take
    * seconds with nothing changing on screen, which read as "stuck". While autofill runs, every
@@ -630,7 +648,7 @@
               <div class="jr-job-meta" id="hs-extract-meta"></div>
             </div>
           </div>
-          <div class="jr-job-toolbar" role="group" aria-label="Job actions">
+          <div class="jr-job-toolbar" id="hs-job-toolbar" role="group" aria-label="Job actions">
             <button type="button" id="hs-copy-job" class="jr-job-copy" title="Copy job title and description" ${hasJob ? '' : 'disabled'}>
               <span class="jr-job-copy-icon" aria-hidden="true">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
@@ -1088,7 +1106,7 @@
     if (card) card.hidden = !hasJob;
     const copyBtn = document.getElementById('hs-copy-job');
     if (copyBtn) {
-      copyBtn.disabled = !canCopy;
+      copyBtn.disabled = !canCopy || extractInFlight;
       copyBtn.title = canCopy
         ? 'Copy job title and description'
         : 'Add a job first to copy title & description';
@@ -2287,7 +2305,7 @@
   async function startAddNewJob({ forceLlm = false } = {}) {
     if (extractInFlight) return;
     ensurePanel();
-    setBusy(['hs-extract', 'hs-extract-ai', 'hs-reset', 'hs-add-job'], true);
+    setAddJobBusy(true);
     setStatus('Checking company against Applied jobs…', false, 'busy');
 
     try {
@@ -2297,7 +2315,7 @@
       if (companyName) {
         const existing = await listAppliedJobsForCompany(companyName);
         if (existing.length) {
-          setBusy(['hs-extract', 'hs-extract-ai', 'hs-reset', 'hs-add-job'], false);
+          setAddJobBusy(false);
           setStatus(
             `Found ${existing.length} saved job(s) at ${companyName}. Confirm to continue…`,
             false,
@@ -2325,7 +2343,7 @@
       await refreshExtract({ forceLlm });
     } catch (err) {
       setStatus(err.message || 'Could not start add job', true);
-      setBusy(['hs-extract', 'hs-extract-ai', 'hs-reset', 'hs-add-job'], false);
+      setAddJobBusy(false);
     }
   }
 
@@ -2334,7 +2352,7 @@
     if (view !== 'apply') await renderView('apply');
     extractInFlight = true;
     ensurePanel();
-    setBusy(['hs-extract', 'hs-extract-ai', 'hs-reset', 'hs-add-job'], true);
+    setAddJobBusy(true);
     setStatus('Extracting from this page…', false, 'busy');
 
     try {
@@ -2400,7 +2418,7 @@
       openJobDialog(finalInfo);
     } finally {
       extractInFlight = false;
-      setBusy(['hs-extract', 'hs-extract-ai', 'hs-reset', 'hs-add-job'], false);
+      setAddJobBusy(false);
       syncJobCard();
     }
   }
@@ -3432,6 +3450,54 @@
             },
           });
         }
+        // Settle + verify, still inside the run (the board stays "busy"): fields that unlock late
+        // (Yes/No after other answers) get their one fill now, and every row's final state is read
+        // back from the page — so the result shown is what the form really holds and never
+        // drops afterwards. This replaces the two delayed retries that ran after "done".
+        setStatus('Checking every field was accepted', false, 'busy');
+        const answerFor = (it) =>
+          allAnswers.find((a) => a.answer && (a.id === it.id || progressQuestionKey(a.question) === progressQuestionKey(it.question)));
+        const readState = () => {
+          const st = HS.getQuestionFillState ? HS.getQuestionFillState() : [];
+          return {
+            byId: new Map(st.map((x) => [x.id, x])),
+            byQ: new Map(st.map((x) => [progressQuestionKey(x.question), x])),
+          };
+        };
+        const stateOf = (st, it) => st.byId.get(it.id) || st.byQ.get(progressQuestionKey(it.question));
+        await sleepMs(500);
+        if (autofillCancelled) throw new Error('cancelled');
+        let st = readState();
+        const pending = progressItems.filter((it) => {
+          if (it.id === '__resume__' || String(it.id).startsWith('__history_')) return false;
+          const now = stateOf(st, it);
+          return now && !now.filled && answerFor(it);
+        });
+        if (pending.length) {
+          setStatus(`Filling ${pending.length} field(s) that unlocked late`, false, 'busy');
+          const retryAnswers = fillableAnswers(pending.map(answerFor));
+          const pendingKeys = new Set(pending.map((it) => progressQuestionKey(it.question)));
+          await HS.fillAnswers(retryAnswers, {
+            onlyListed: true,
+            onItem: (item) => {
+              if (!item?.filled || !pendingKeys.has(progressQuestionKey(item.question))) return;
+              onFillItem(item);
+            },
+          });
+          await sleepMs(300);
+          st = readState();
+        }
+        // Final truth from the page
+        progressItems = progressItems.map((it) => {
+          if (it.id === '__resume__' || String(it.id).startsWith('__history_')) return it;
+          const now = stateOf(st, it);
+          if (!now) return it;
+          if (now.filled && !it.filled) return { ...it, filled: true, source: it.source && it.source !== 'unmatched' ? it.source : 'page' };
+          if (!now.filled && it.filled) return { ...it, filled: false, source: 'unmatched' };
+          return it;
+        });
+        filled = progressItems.filter((it) => it.filled && it.id !== '__resume__').length;
+
         // Attach source only when fill succeeded — don't show profile/saved on empty controls
         const byId = new Map(allAnswers.map((a) => [a.id, a]));
         progressItems = dedupeProgress(
@@ -3507,63 +3573,6 @@
       // Keep learning: user edits after autofill are remembered for the next app
       startAnswerLearningWatch();
 
-      // ATS often unlocks Yes/No after other fields settle — retry + sync progress
-      const delayedAnswers = allAnswers || [];
-      const retryChoiceFill = async () => {
-        if (autofillCancelled || !HS.fillAnswers || !delayedAnswers.length) return;
-        const open = (progressItemsCache || []).filter(
-          (i) =>
-            i.id !== '__resume__' &&
-            (!i.filled || i.source === 'unmatched' || i.source === 'needs_user')
-        );
-        if (!open.length) {
-          syncProgressFromUserEdits();
-          return;
-        }
-        try {
-          const subset = delayedAnswers.filter((a) => {
-            if (!a?.answer) return false;
-            const qk = progressQuestionKey(a.question);
-            return open.some(
-              (i) => i.id === a.id || progressQuestionKey(i.question) === qk
-            );
-          });
-          if (!subset.length) {
-            syncProgressFromUserEdits();
-            return;
-          }
-          const retry = await HS.fillAnswers(subset, {
-            onlyListed: true,
-            onItem: (item) => {
-              if (!item?.filled) return;
-              const qk = progressQuestionKey(item.question);
-              const idx = progressItemsCache.findIndex(
-                (p) => p.id === item.id || progressQuestionKey(p.question) === qk
-              );
-              if (idx >= 0) {
-                progressItemsCache[idx] = {
-                  ...progressItemsCache[idx],
-                  filled: true,
-                  source: item.source || progressItemsCache[idx].source || 'updated',
-                };
-              }
-            },
-          });
-          if (retry?.items) {
-            progressItemsCache = dedupeProgress(progressItemsCache);
-            renderAutofillProgress(progressItemsCache, { busy: false, expanded: true });
-          }
-        } catch (err) {
-          console.warn('Delayed choice fill failed', err);
-        }
-        syncProgressFromUserEdits();
-      };
-      setTimeout(() => {
-        retryChoiceFill();
-      }, 900);
-      setTimeout(() => {
-        retryChoiceFill();
-      }, 2200);
     } catch (err) {
       if (String(err?.message || err) === 'cancelled') {
         renderAutofillProgress(progressItemsCache, { busy: false, expanded: false });

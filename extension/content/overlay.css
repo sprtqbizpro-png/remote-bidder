@@ -3747,3 +3747,16 @@ html.hs-dialog-open {
 #hs-company-dup-dialog .jr-dup-continue:hover {
   filter: brightness(1.03);
 }
+
+/* "Add a new job" in progress: job card + its actions locked */
+#hs-panel .jr-job-summary.is-busy,
+#hs-panel .jr-job-toolbar.is-busy {
+  opacity: 0.45 !important;
+  pointer-events: none !important;
+  user-select: none !important;
+  filter: grayscale(0.4);
+  transition: opacity 0.15s ease;
+}
+#hs-panel .jr-job-toolbar.is-busy button {
+  cursor: not-allowed !important;
+}
