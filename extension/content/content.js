@@ -3,8 +3,23 @@
  */
 (function () {
   const HS = window.HiddenStar;
-  if (!HS || window.__hsContentLoaded) return;
+  // A previous instance whose extension context died (extension reloaded/updated) must not block
+  // the fresh one the background re-injects.
+  if (!HS || (window.__hsContentLoaded && window.__hsAlive?.())) return;
   window.__hsContentLoaded = true;
+  // This instance's own check — window.__hsAlive is overwritten by a newer instance
+  const alive = () => {
+    try {
+      return !!chrome.runtime?.id;
+    } catch {
+      return false;
+    }
+  };
+  window.__hsAlive = alive;
+  // Remove the dead instance's panel/dock/dialogs (their listeners can no longer reach the extension)
+  document
+    .querySelectorAll('#hs-panel, #hs-dock, #hs-info-dialog, #hs-job-dialog')
+    .forEach((n) => n.remove());
 
   let panel = null;
   let dock = null;
@@ -48,8 +63,69 @@
   let panelRestoreInFlight = false;
   let openPanelInFlight = null;
 
-  function send(type, payload) {
-    return chrome.runtime.sendMessage({ type, payload });
+  let contextDead = false;
+
+  function isContextInvalidated(err) {
+    return /extension context invalidated|receiving end does not exist/i.test(String(err?.message || err));
+  }
+
+  /**
+   * The extension was reloaded/updated while this tab stayed open: this copy of the script can no
+   * longer talk to it. If the background already injected a fresh copy, step aside; otherwise
+   * tell the user to reload the page instead of showing the raw Chrome error.
+   */
+  function handleContextInvalidated() {
+    if (contextDead) return;
+    contextDead = true;
+    stopAnswerLearningWatch?.();
+    const fresh = Array.from(document.querySelectorAll('#hs-panel')).some((p) => p !== panel);
+    if (fresh) {
+      [panel, dock, infoDialog, jobDialog].forEach((n) => n?.remove?.());
+      return;
+    }
+    const el = document.getElementById('hs-status');
+    if (el) {
+      el.classList.remove('hs-ok', 'hs-busy');
+      el.classList.add('hs-error');
+      el.innerHTML =
+        'King Star was updated. <button type="button" class="hs-reload-page">Reload this page</button> to continue.';
+      el.querySelector('.hs-reload-page')?.addEventListener('click', () => location.reload());
+    }
+  }
+
+  /** chrome.storage.local that degrades quietly once the extension context is gone. */
+  function storageSet(items) {
+    try {
+      if (alive()) chrome.storage.local.set(items);
+      else handleContextInvalidated();
+    } catch {
+      handleContextInvalidated();
+    }
+  }
+  function storageGet(defaults, cb) {
+    try {
+      if (alive()) return chrome.storage.local.get(defaults, cb);
+      handleContextInvalidated();
+    } catch {
+      handleContextInvalidated();
+    }
+    cb(defaults);
+  }
+
+  async function send(type, payload) {
+    if (contextDead || !alive()) {
+      handleContextInvalidated();
+      return { ok: false, error: 'King Star was updated — reload this page to continue.' };
+    }
+    try {
+      return await chrome.runtime.sendMessage({ type, payload });
+    } catch (err) {
+      if (isContextInvalidated(err) && !alive()) {
+        handleContextInvalidated();
+        return { ok: false, error: 'King Star was updated — reload this page to continue.' };
+      }
+      throw err;
+    }
   }
 
   function updateSteps() {
@@ -126,13 +202,13 @@
       dock.querySelector('.hs-dock-dismiss').addEventListener('click', (e) => {
         e.stopPropagation();
         dock.classList.add('hs-dock-hidden');
-        chrome.storage.local.set({ hsDockHidden: true });
+        storageSet({ hsDockHidden: true });
       });
       enableDockDrag(dock.querySelector('.hs-dock-handle'));
     }
     mountUiRoot(dock);
 
-    chrome.storage.local.get({ hsDockTop: null, hsDockHidden: false }, (res) => {
+    storageGet({ hsDockTop: null, hsDockHidden: false }, (res) => {
       if (!dock) return;
       if (typeof res.hsDockTop === 'number') {
         dockTop = res.hsDockTop;
@@ -151,7 +227,7 @@
   function showDock() {
     ensureDock();
     dock.classList.remove('hs-dock-hidden');
-    chrome.storage.local.set({ hsDockHidden: false });
+    storageSet({ hsDockHidden: false });
   }
 
   const PANEL_WIDTH = 400;
@@ -179,7 +255,7 @@
     if (open) {
       // Opening the panel always clears a stale "dock dismissed" flag
       dock.classList.remove('hs-dock-hidden');
-      chrome.storage.local.set({ hsDockHidden: false });
+      storageSet({ hsDockHidden: false });
     } else {
       closeInfoDialog();
       closeJobDialog();
@@ -212,7 +288,7 @@
       document.removeEventListener('mouseup', onUp);
       document.removeEventListener('touchmove', onMove);
       document.removeEventListener('touchend', onUp);
-      if (typeof dockTop === 'number') chrome.storage.local.set({ hsDockTop: dockTop });
+      if (typeof dockTop === 'number') storageSet({ hsDockTop: dockTop });
     };
 
     const onDown = (e) => {
@@ -1616,6 +1692,13 @@
   async function rememberFilledAnswers() {
     if (!HS.collectFilledAnswers) return { saved: 0 };
     const pairs = HS.collectFilledAnswers();
+    // Answers on embedded (iframe) application forms
+    try {
+      const res = await send('FRAMES_CALL', { fn: 'frameCollectFilled' });
+      if (res?.ok) for (const f of res.data || []) if (Array.isArray(f.result)) pairs.push(...f.result);
+    } catch {
+      /* ignore */
+    }
     if (!pairs.length) return { saved: 0 };
     const res = await send('SAVE_FIXED_ANSWERS_BULK', {
       answers: pairs,
@@ -2392,7 +2475,83 @@
    * Structured work / education history parsed from the uploaded resume (server-side, so PDFs work).
    * Also back-fills lastResumeText for PDFs, whose text the extension cannot read itself.
    */
-  async function loadResumeHistory() {
+  let resumeHistoryInFlight = null;
+
+  function loadResumeHistory() {
+    // History filling and AI resume context can ask at the same time: share one request
+    if (!resumeHistoryInFlight) {
+      resumeHistoryInFlight = loadResumeHistoryOnce().finally(() => {
+        resumeHistoryInFlight = null;
+      });
+    }
+    return resumeHistoryInFlight;
+  }
+
+  /* ---------- Embedded application forms (iframes) ---------- */
+
+  const frameQid = (frameId, id) => `f${frameId}::${id}`;
+  const isFrameQid = (id) => /^f\d+::/.test(String(id || ''));
+  const frameOfQid = (id) => Number(String(id).match(/^f(\d+)::/)?.[1]);
+  const localQid = (id) => String(id).replace(/^f\d+::/, '');
+
+  /** Sub-frames that contain an application form: [{ frameId, result: { questions, resumeInputs, hasHistory } }]. */
+  async function collectFrames() {
+    try {
+      const res = await send('FRAMES_CALL', { fn: 'frameCollect' });
+      return res?.ok && Array.isArray(res.data) ? res.data : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function historyProgressRows(entries, frameId) {
+    return (entries || []).map((e) => ({
+      id: `__history_${frameId ?? 'top'}_${e.section}_${e.index}__`,
+      question: `${e.section === 'work' ? 'Work history' : 'Education'} ${e.index + 1}: ${e.label}`,
+      required: false,
+      filled: e.filled,
+      source: e.filled ? 'resume' : 'unmatched',
+    }));
+  }
+
+  /** Fill every embedded form in parallel; each frame attaches the resume, fills history, then answers. */
+  async function fillFrames(frames, answers, history) {
+    const out = { filled: 0, resumeFilled: 0, items: [] };
+    const resume = lastResumeDataUrl
+      ? { dataUrl: lastResumeDataUrl, name: lastResumeName || 'resume.pdf', mime: lastResumeMime || '' }
+      : null;
+    await Promise.all(
+      frames.map(async (f) => {
+        const mine = answers
+          .filter((a) => frameOfQid(a.id) === f.frameId)
+          .map((a) => ({ ...a, id: localQid(a.id) }));
+        try {
+          const res = await send('FRAMES_CALL', {
+            fn: 'frameFill',
+            frameIds: [f.frameId],
+            arg: {
+              answers: mine,
+              history: f.result.hasHistory ? history : null,
+              resume: f.result.resumeInputs ? resume : null,
+            },
+          });
+          const r = res?.ok ? res.data?.[0]?.result : null;
+          if (!r) return;
+          out.filled += r.filled || 0;
+          out.resumeFilled += r.resumeFilled || 0;
+          out.items.push(
+            ...(r.items || []).map((i) => ({ ...i, id: frameQid(f.frameId, i.id) })),
+            ...historyProgressRows(r.historyEntries, f.frameId)
+          );
+        } catch (err) {
+          console.warn('Frame fill failed', err);
+        }
+      })
+    );
+    return out;
+  }
+
+  async function loadResumeHistoryOnce() {
     if (!lastResumeDataUrl && !lastResumeText) await loadSavedResume();
     if (!lastResumeDataUrl && !lastResumeText) return null;
     const key = `${lastResumeName || ''}|${(lastResumeDataUrl || '').length}|${(lastResumeText || '').length}`;
@@ -2776,11 +2935,27 @@
       let resumeInputs = HS.findResumeInputs ? HS.findResumeInputs() : [];
       let host = HS.detectHostResumeAutofill ? HS.detectHostResumeAutofill() : null;
       let collected = HS.collectQuestions();
-      if (!collected.length && !resumeInputs.length && !host && !HS.hasHistorySections?.()) {
-        setStatus('No fillable application questions found on this page.', true);
+      // Application forms embedded in an iframe (e.g. Greenhouse inside careers.airbnb.com)
+      let frames = await collectFrames();
+      const topHasHistory = !!HS.hasHistorySections?.();
+      if (!collected.length && !resumeInputs.length && !host && !topHasHistory && !frames.length) {
+        setStatus(
+          'No application form found on this page yet. If the site shows an "Apply" button, open the form first, then run Autofill.',
+          true
+        );
         setBusy(['hs-autofill'], false);
         return;
       }
+
+      // Slow, independent work starts now and runs while the resume is attached / the site parses it
+      const wantsHistory = !!HS.fillHistory && (topHasHistory || frames.some((f) => f.result.hasHistory));
+      const historyPromise = wantsHistory
+        ? loadResumeHistory().catch((err) => {
+            console.warn('Resume history failed', err);
+            return { error: err.message || 'resume analysis failed' };
+          })
+        : Promise.resolve(null);
+      const resumeContextPromise = buildResumeContext();
 
       const openaiStatus = await refreshOpenAIStatus();
       const needsAi = collected.some(
@@ -2884,47 +3059,22 @@
 
       if (autofillCancelled) throw new Error('cancelled');
 
-      // Phase 2b: Work / Employment history + Education straight from the resume (not fixed answers)
-      let historyRows = [];
-      if (HS.fillHistory && HS.hasHistorySections?.()) {
-        try {
-          setStatus('Reading work & education history from your resume…', false, 'busy');
-          const history = await loadResumeHistory();
-          if (autofillCancelled) throw new Error('cancelled');
-          if (history && (history.work?.length || history.education?.length)) {
-            setStatus('Filling work & education history from your resume…', false, 'busy');
-            const hist = await HS.fillHistory(history, { shouldCancel: () => autofillCancelled });
-            historyRows = hist.entries.map((e) => ({
-              id: `__history_${e.section}_${e.index}__`,
-              question: `${e.section === 'work' ? 'Work history' : 'Education'} ${e.index + 1}: ${e.label}`,
-              required: false,
-              filled: e.filled,
-              source: e.filled ? 'resume' : 'unmatched',
-            }));
-          }
-        } catch (err) {
-          if (err.message === 'cancelled') throw err;
-          console.warn('History autofill failed', err);
-          setStatus(`Work/education history skipped — ${err.message || 'resume analysis failed'}`, true);
-        }
-      }
-
       // Re-scan after host fill so already-filled fields are recognized
       collected = HS.collectQuestions();
       resumeInputs = HS.findResumeInputs ? HS.findResumeInputs() : [];
-      progressItems = buildProgressSeed(collected, resumeInputs).concat(historyRows);
+      frames = await collectFrames();
+      const frameQuestions = frames.flatMap((f) =>
+        f.result.questions.map((q) => ({ ...q, id: frameQid(f.frameId, q.id) }))
+      );
+      progressItems = buildProgressSeed(collected, resumeInputs).concat(
+        frameQuestions.map((q) => ({ id: q.id, question: q.question, required: q.required !== false, filled: false }))
+      );
+      if (!resumeInputs.length && frames.some((f) => f.result.resumeInputs)) {
+        progressItems.push({ id: '__resume__', question: 'Resume/CV', required: true, filled: false });
+      }
       // Mark resume row if we attached a file
       const resumeSeed = progressItems.find((p) => p.id === '__resume__');
       if (resumeSeed && resumeFilled > 0) resumeSeed.filled = true;
-      // Mark fields already filled by host
-      progressItems = progressItems.map((item) => {
-        if (item.id === '__resume__') return item;
-        const q = collected.find((c) => c.id === item.id);
-        if (q?.element && HS.fillAnswers) {
-          /* fieldValue is internal; rely on fillAnswers already-filled path later */
-        }
-        return item;
-      });
       renderAutofillProgress(progressItems, {
         busy: true,
         expanded: true,
@@ -2932,86 +3082,131 @@
         waiting: false,
       });
 
-      const resumeContext = await buildResumeContext();
+      const resumeContext = await resumeContextPromise;
       if (autofillCancelled) throw new Error('cancelled');
 
-      // Phase 3: King Star fill (profile + OpenAI) for leftover blanks
+      const generateFor = (qs) =>
+        send('GENERATE_ANSWERS', {
+          questions: qs.map(({ id, question, tag, type, placeholder, options }) => ({
+            id,
+            question,
+            tag,
+            type,
+            placeholder,
+            options: HS.serializableOptions ? HS.serializableOptions(options) : options,
+          })),
+          companyName: info.companyName,
+          roleName: info.roleName,
+          jobDescription: info.jobDescription,
+          resumeContext,
+        });
+      // Never fill cover letters — leave those for the user
+      const fillableAnswers = (list) =>
+        list.filter((a) => {
+          if (!a.answer) return false;
+          if (HS.isCoverLetterField?.(a.question, { placeholder: a.placeholder })) return false;
+          if (/cover\s*letter/i.test(a.question || '')) return false;
+          return true;
+        });
+
+      // Phase 3 request goes out now: the server matches / generates while history is filled below
+      const allQuestions = collected.concat(frameQuestions);
+      const generatePromise = allQuestions.length ? generateFor(allQuestions) : Promise.resolve(null);
+      if (allQuestions.length) {
+        setStatus(`Filling ${allQuestions.length} field(s) from profile, resume & OpenAI…`, false, 'busy');
+      }
+
+      // Phase 2b: Work / Employment history + Education straight from the resume (not fixed answers)
+      let historyRows = [];
+      const history = await historyPromise;
+      if (autofillCancelled) throw new Error('cancelled');
+      const historyData =
+        history && !history.error && (history.work?.length || history.education?.length) ? history : null;
+      if (history?.error) {
+        setStatus(`Work/education history skipped — ${history.error}`, true);
+      }
+      if (historyData && HS.hasHistorySections?.()) {
+        try {
+          setStatus('Filling work & education history from your resume…', false, 'busy');
+          const hist = await HS.fillHistory(historyData, { shouldCancel: () => autofillCancelled });
+          historyRows = historyProgressRows(hist.entries, null);
+        } catch (err) {
+          if (err.message === 'cancelled') throw err;
+          console.warn('History autofill failed', err);
+        }
+      }
+      progressItems = progressItems.concat(historyRows);
+      renderAutofillProgress(progressItems, {
+        busy: true,
+        expanded: true,
+        busyLabel: 'Autofilling remaining fields',
+        waiting: false,
+      });
+
       let allAnswers = [];
-      if (collected.length) {
-        setStatus(
-          `Filling ${collected.length} field(s) from profile, resume & OpenAI…`,
-          false,
-          'busy'
+      const res = await generatePromise;
+      if (autofillCancelled) throw new Error('cancelled');
+      if (res && !res.ok) throw new Error(res.error || 'Failed');
+      allAnswers = res?.data?.answers || [];
+      meta = res?.data?.meta || {};
+      const keepRow = (p) =>
+        p.id === '__resume__' || String(p.id).startsWith('__history_') || isFrameQid(p.id);
+
+      const onFillItem = (item) => {
+        if (autofillCancelled) return;
+        const qk = progressQuestionKey(item.question);
+        const idx = progressItems.findIndex(
+          (p) => p.id === item.id || (!isFrameQid(p.id) && progressQuestionKey(p.question) === qk)
         );
-        updateProgressBusyLabel('Autofilling remaining fields', { waiting: false });
-        const generateFor = (qs) =>
-          send('GENERATE_ANSWERS', {
-            questions: qs.map(({ id, question, tag, type, placeholder, options }) => ({
-              id,
-              question,
-              tag,
-              type,
-              placeholder,
-              options: HS.serializableOptions ? HS.serializableOptions(options) : options,
-            })),
-            companyName: info.companyName,
-            roleName: info.roleName,
-            jobDescription: info.jobDescription,
-            resumeContext,
-          });
-        // Never fill cover letters — leave those for the user
-        const fillableAnswers = (list) =>
-          list.filter((a) => {
-            if (!a.answer) return false;
-            if (HS.isCoverLetterField?.(a.question, { placeholder: a.placeholder })) return false;
-            if (/cover\s*letter/i.test(a.question || '')) return false;
-            return true;
-          });
+        if (idx >= 0) progressItems[idx] = { ...progressItems[idx], ...item };
+        else progressItems.push(item);
+        progressItems = dedupeProgress(progressItems);
+        renderAutofillProgress(progressItems, {
+          busy: true,
+          expanded: true,
+          busyLabel: 'Autofilling remaining fields',
+          waiting: false,
+        });
+      };
 
-        const res = await generateFor(collected);
-        if (autofillCancelled) throw new Error('cancelled');
-        if (!res?.ok) throw new Error(res?.error || 'Failed');
-
-        allAnswers = res.data.answers || [];
-        const answers = fillableAnswers(allAnswers);
-        const onFillItem = (item) => {
-          if (autofillCancelled) return;
-          const qk = String(item.question || '')
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, ' ')
-            .trim();
-          const idx = progressItems.findIndex(
-            (p) =>
-              p.id === item.id ||
-              String(p.question || '')
-                .toLowerCase()
-                .replace(/[^a-z0-9]+/g, ' ')
-                .trim() === qk
-          );
-          if (idx >= 0) progressItems[idx] = { ...progressItems[idx], ...item };
-          else progressItems.push(item);
-          progressItems = dedupeProgress(progressItems);
-          renderAutofillProgress(progressItems, {
-            busy: true,
-            expanded: true,
-            busyLabel: 'Autofilling remaining fields',
-            waiting: false,
-          });
-        };
+      if (collected.length) {
+        const answers = fillableAnswers(allAnswers.filter((a) => !isFrameQid(a.id)));
         const result = await HS.fillAnswers(answers, { onItem: onFillItem });
         if (autofillCancelled) throw new Error('cancelled');
         filled = typeof result === 'number' ? result : result.filled || 0;
         if (result?.items) {
-          progressItems = dedupeProgress(
-            result.items.concat(progressItems.filter((p) => p.id === '__resume__' || String(p.id).startsWith('__history_')))
-          );
+          progressItems = dedupeProgress(result.items.concat(progressItems.filter(keepRow)));
         }
+      }
 
+      // Embedded forms: each frame fills its own resume input, history entries and answers
+      if (frames.length) {
+        setStatus('Filling the embedded application form…', false, 'busy');
+        const fr = await fillFrames(
+          frames,
+          fillableAnswers(allAnswers.filter((a) => isFrameQid(a.id))),
+          historyData
+        );
+        if (autofillCancelled) throw new Error('cancelled');
+        filled += fr.filled;
+        resumeFilled += fr.resumeFilled;
+        if (fr.resumeFilled > 0) steps.resume = true;
+        const touched = new Set(fr.items.map((i) => i.id));
+        progressItems = progressItems.filter((p) => !touched.has(p.id)).concat(fr.items);
+        renderAutofillProgress(progressItems, {
+          busy: true,
+          expanded: true,
+          busyLabel: 'Autofilling remaining fields',
+          waiting: false,
+        });
+      }
+
+      if (collected.length) {
         // Follow-up questions ("If yes, which visa?", "Please explain…") only appear after earlier
         // answers are set. Re-scan and answer anything new until the form stops growing.
         const askedKeys = new Set(collected.map((q) => progressQuestionKey(q.question)));
         for (let pass = 0; pass < 3 && !autofillCancelled; pass++) {
-          await new Promise((r) => setTimeout(r, 700));
+          await new Promise((r) => setTimeout(r, 450));
           const fresh = HS.collectQuestions().filter((q) => {
             const k = progressQuestionKey(q.question);
             return k && !askedKeys.has(k);
@@ -3041,6 +3236,9 @@
             },
           });
         }
+      }
+
+      if (allAnswers.length) {
         // Attach source only when fill succeeded — don't show profile/saved on empty controls
         const byId = new Map(allAnswers.map((a) => [a.id, a]));
         progressItems = dedupeProgress(
@@ -3062,7 +3260,6 @@
             };
           })
         );
-        meta = res.data.meta || {};
         renderAutofillProgress(progressItems, {
           busy: true,
           expanded: true,
@@ -3081,13 +3278,14 @@
       updateSteps();
       await persistDraft({ steps: { ...steps } });
 
-      let remembered = 0;
-      try {
-        const bulk = await rememberFilledAnswers();
-        remembered = bulk.saved || 0;
-      } catch {
-        /* non-fatal */
-      }
+      // Learning runs in the background (it may call the LLM) — don't hold the result on it
+      rememberFilledAnswers()
+        .then((bulk) => {
+          if (bulk?.saved) refreshFixedCount().catch(() => {});
+        })
+        .catch(() => {
+          /* non-fatal */
+        });
 
       const consentCount = progressItems.filter((i) => i.source === 'consent' && i.filled).length;
       const { reqDone, reqTotal, bySource } = progressStats(progressItems);
@@ -3103,7 +3301,6 @@
       }
       if (src.openai || meta.generated) msg += ` · ${src.openai || meta.generated} AI`;
       if (src.unmatched || meta.needsUser) msg += ` · ${src.unmatched || meta.needsUser} unmatched`;
-      if (remembered) msg += ` · learned ${remembered}`;
       if (meta.openaiError && filled < collected.length) {
         msg += `. OpenAI: ${meta.openaiError}`;
         setStatus(msg, true);

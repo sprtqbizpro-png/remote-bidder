@@ -33,6 +33,22 @@ import {
 
 const router = Router();
 
+const GENERATE_CONCURRENCY = 5;
+
+/** Promise.all with a concurrency cap; results keep input order. */
+async function mapLimit(list, limit, fn) {
+  const out = new Array(list.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < list.length) {
+      const i = next++;
+      out[i] = await fn(list[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, list.length) }, worker));
+  return out;
+}
+
 /** Fixed rows indexed by every exact phrasing they were answered under. */
 function aliasIndex(rows) {
   const index = new Map();
@@ -419,20 +435,20 @@ router.post('/generate', async (req, res) => {
       }
     }
 
-    // ── Pass 3: generate what the bank cannot answer
-    for (const it of items) {
+    // ── Pass 3: generate what the bank cannot answer — concurrently (one OpenAI call per
+    // open-ended question; sequential calls made long applications slow)
+    const rows = await mapLimit(items, GENERATE_CONCURRENCY, async (it) => {
       const { questionText, fieldMeta, intent } = it;
       const fieldId = it.id;
       if (it.coverLetter) {
-        results.push({
+        return {
           id: fieldId,
           question: questionText,
           answer: '',
           source: 'skipped',
           intent: 'cover_letter',
           kind: 'cover_letter',
-        });
-        continue;
+        };
       }
 
       let answer = it.answer;
@@ -477,14 +493,15 @@ router.post('/generate', async (req, res) => {
 
       // Nothing is learned here: the extension posts the values that actually ended up on the
       // page (after the user's review) to /fixed/bulk, which stores them by meaning.
-      results.push({
+      return {
         id: fieldId,
         question: questionText,
         answer: answer || '',
         source: source || 'unmatched',
         intent,
-      });
-    }
+      };
+    });
+    results.push(...rows);
 
     res.json({
       answers: results,

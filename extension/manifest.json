@@ -48,6 +48,14 @@
       ],
       "css": ["content/overlay.css"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content/autofill.js"],
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true,
+      "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [

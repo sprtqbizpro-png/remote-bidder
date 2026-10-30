@@ -204,8 +204,38 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
+/**
+ * After an install / update / reload, tabs that were already open still run the old content
+ * script, which Chrome has cut off ("Extension context invalidated"). Inject the current scripts
+ * so those tabs work without a manual page reload; the new instance replaces the stale panel.
+ */
+async function reinjectContentScripts() {
+  const manifest = chrome.runtime.getManifest();
+  const [main, frames] = manifest.content_scripts || [];
+  const tabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] });
+  await Promise.all(
+    tabs.map(async (tab) => {
+      if (tab.id == null || tab.discarded) return;
+      try {
+        if (main?.css?.length) {
+          await chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: main.css });
+        }
+        if (frames?.js?.length) {
+          await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: frames.js });
+        }
+        if (main?.js?.length) {
+          await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: main.js });
+        }
+      } catch {
+        /* restricted pages (Web Store, PDF viewer, …) */
+      }
+    })
+  );
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   ensureJobsPollAlarm();
+  reinjectContentScripts().catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(() => {
@@ -276,6 +306,34 @@ async function handleMessage(message, sender = {}) {
         },
       });
       return { ok: true, data };
+    }
+
+    case 'FRAMES_CALL': {
+      // Run a HiddenStar frame function (frameCollect / frameFill / frameCollectFilled) inside the
+      // tab's sub-frames — embedded application forms the top-frame panel cannot reach.
+      const tabId = sender.tab?.id;
+      if (tabId == null) return { ok: true, data: [] };
+      const { fn, arg = null, frameIds } = message.payload || {};
+      const target = frameIds?.length ? { tabId, frameIds } : { tabId, allFrames: true };
+      let results = [];
+      try {
+        results = await chrome.scripting.executeScript({
+          target,
+          func: async (name, input) => {
+            if (window.top === window) return null;
+            const HS = window.HiddenStar;
+            if (!HS || typeof HS[name] !== 'function') return null;
+            return await HS[name](input);
+          },
+          args: [fn, arg],
+        });
+      } catch (err) {
+        console.warn('FRAMES_CALL failed', err);
+      }
+      return {
+        ok: true,
+        data: (results || []).filter((r) => r && r.result).map((r) => ({ frameId: r.frameId, result: r.result })),
+      };
     }
 
     case 'PARSE_RESUME_HISTORY': {
