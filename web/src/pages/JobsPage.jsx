@@ -73,7 +73,7 @@ function creatorLabel(job) {
 }
 
 const PAGE_SIZE = 8;
-const JOBS_POLL_MS = 15000;
+const JOBS_POLL_MS = 60000;
 
 const DATE_PRESETS = [
   { id: 'all', label: 'Any time' },

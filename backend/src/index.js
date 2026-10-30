@@ -54,6 +54,15 @@ app.use(
 );
 app.use(express.json({ limit: '2mb' }));
 
+const DB_QUOTA_RE = /exceeded the quota|quota exceeded|data transfer quota|compute time quota/i;
+function dbQuotaError(err) {
+  const text = String(err?.message || err || '');
+  return DB_QUOTA_RE.test(text) || err?.status === 402 || /HTTP status 402/.test(text);
+}
+const DB_QUOTA_MESSAGE =
+  'The database (Neon) has reached its plan limit for this month, so King Star cannot read or save data right now. ' +
+  'Nothing is lost — it works again when the Neon plan is upgraded or the monthly quota resets.';
+
 /** Ensure DB is ready and reloaded on every request (Vercel multi-instance sessions). */
 app.use(async (_req, res, next) => {
   try {
@@ -69,6 +78,9 @@ app.use(async (_req, res, next) => {
     next();
   } catch (err) {
     console.error('[db] init failed:', err);
+    if (dbQuotaError(err)) {
+      return res.status(503).json({ error: DB_QUOTA_MESSAGE, code: 'DB_QUOTA_EXCEEDED' });
+    }
     res.status(503).json({
       error: err.message || 'Database unavailable',
       hint: 'Check DATABASE_URL on Vercel and that Neon is reachable.',
@@ -94,6 +106,9 @@ app.use('/api/extract', extractRouter);
 
 app.use((err, _req, res, _next) => {
   console.error(err);
+  if (dbQuotaError(err)) {
+    return res.status(503).json({ error: DB_QUOTA_MESSAGE, code: 'DB_QUOTA_EXCEEDED' });
+  }
   res.status(500).json({ error: err.message || 'Internal error' });
 });
 

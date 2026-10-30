@@ -74,7 +74,9 @@ async function apiJson(path, { method = 'GET', body } = {}) {
 }
 
 const JOBS_POLL_ALARM = 'ks-jobs-poll';
-const JOBS_POLL_MINUTES = 0.5; // ~30s
+// Teammates' saves are announced within a few minutes; polling every 30 s from every
+// member's browser kept the database awake around the clock.
+const JOBS_POLL_MINUTES = 3;
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   handleMessage(message, sender)
@@ -196,7 +198,10 @@ async function pollAppliedJobsForNotifications() {
 async function ensureJobsPollAlarm() {
   try {
     const existing = await chrome.alarms.get(JOBS_POLL_ALARM);
-    if (!existing) {
+    if (existing && existing.periodInMinutes !== JOBS_POLL_MINUTES) {
+      await chrome.alarms.clear(JOBS_POLL_ALARM);
+    }
+    if (!existing || existing.periodInMinutes !== JOBS_POLL_MINUTES) {
       await chrome.alarms.create(JOBS_POLL_ALARM, {
         periodInMinutes: JOBS_POLL_MINUTES,
       });

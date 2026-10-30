@@ -87,6 +87,8 @@ let readyPromise = null;
 let persistFn = null;
 /** @type {(() => Promise<object>)|null} */
 let loadFn = null;
+/** Like loadFn, but resolves null when the stored copy has not changed since we last saw it. */
+let loadChangedFn = null;
 let writeQueue = Promise.resolve();
 /** @type {Promise<void>|null} */
 let reloadPromise = null;
@@ -155,7 +157,25 @@ function createFilePersist(dbPath) {
 
 function createPostgresPersist(databaseUrl) {
   const sql = neon(databaseUrl);
+  /** updated_at (as text, full precision) of the copy this instance last read or wrote. */
+  let stamp = null;
   return {
+    /**
+     * Full blob only when another instance saved since our last read/write; otherwise a
+     * timestamp-sized reply. Reading the whole store on every request is what used up the
+     * Neon data-transfer / compute quota.
+     */
+    async loadIfChanged() {
+      if (!stamp) return this.load();
+      const rows = await sql`
+        SELECT data, updated_at::text AS stamp FROM king_star_store
+        WHERE id = ${STORE_ID} AND updated_at > ${stamp}::timestamptz
+        LIMIT 1
+      `;
+      if (!rows.length) return null;
+      stamp = rows[0].stamp;
+      return { ...structuredClone(DEFAULT), ...rows[0].data };
+    },
     async load() {
       await sql`
         CREATE TABLE IF NOT EXISTS king_star_store (
@@ -165,7 +185,7 @@ function createPostgresPersist(databaseUrl) {
         )
       `;
       const rows = await sql`
-        SELECT data FROM king_star_store WHERE id = ${STORE_ID} LIMIT 1
+        SELECT data, updated_at::text AS stamp FROM king_star_store WHERE id = ${STORE_ID} LIMIT 1
       `;
       if (!rows.length) {
         const seed = structuredClone(DEFAULT);
@@ -176,15 +196,18 @@ function createPostgresPersist(databaseUrl) {
         `;
         return seed;
       }
+      stamp = rows[0].stamp;
       return { ...structuredClone(DEFAULT), ...rows[0].data };
     },
     async save(data) {
-      await sql`
+      const rows = await sql`
         INSERT INTO king_star_store (id, data, updated_at)
         VALUES (${STORE_ID}, ${data}, NOW())
         ON CONFLICT (id) DO UPDATE
         SET data = EXCLUDED.data, updated_at = NOW()
+        RETURNING updated_at::text AS stamp
       `;
+      if (rows?.[0]?.stamp) stamp = rows[0].stamp;
     },
   };
 }
@@ -270,10 +293,11 @@ async function persistMerged(snapshot) {
   let toSave = structuredClone(snapshot);
   if (loadFn) {
     try {
-      const remote = await loadFn();
-      toSave = mergeStoreBlobs(toSave, remote);
+      // Unchanged since we last read/wrote: our snapshot already holds everything
+      const remote = await (loadChangedFn || loadFn)();
+      if (remote) toSave = mergeStoreBlobs(toSave, remote);
       // Keep in-memory store aligned with what we persist.
-      if (state) {
+      if (remote && state) {
         state.sessions = toSave.sessions;
         state.applied_jobs = toSave.applied_jobs;
         state.users = toSave.users;
@@ -350,6 +374,7 @@ export async function initDb() {
       : createFilePersist(resolveFileDbPath());
     persistFn = (data) => backend.save(data);
     loadFn = () => backend.load();
+    loadChangedFn = backend.loadIfChanged ? () => backend.loadIfChanged() : loadFn;
     state = await backend.load();
     state.tombstones = state.tombstones || {};
     syncedIds = idsOf(state);
@@ -385,9 +410,11 @@ export async function reloadDb() {
     return state;
   }
   reloadPromise = (async () => {
-    const fresh = await loadFn();
-    state = mergeLoadedState(state, fresh);
-    syncedIds = idsOf(state);
+    const fresh = await (loadChangedFn || loadFn)();
+    if (fresh) {
+      state = mergeLoadedState(state, fresh);
+      syncedIds = idsOf(state);
+    }
   })();
   try {
     await reloadPromise;
