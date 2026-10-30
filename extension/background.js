@@ -204,45 +204,57 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
-/**
- * After an install / update / reload, tabs that were already open still run the old content
- * script, which Chrome has cut off ("Extension context invalidated"). Inject the current scripts
- * so those tabs work without a manual page reload; the new instance replaces the stale panel.
- */
-async function reinjectContentScripts() {
-  const manifest = chrome.runtime.getManifest();
-  const [main, frames] = manifest.content_scripts || [];
-  const tabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] });
-  await Promise.all(
-    tabs.map(async (tab) => {
-      if (tab.id == null || tab.discarded) return;
-      try {
-        if (main?.css?.length) {
-          await chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: main.css });
-        }
-        if (frames?.js?.length) {
-          await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: frames.js });
-        }
-        if (main?.js?.length) {
-          await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: main.js });
-        }
-      } catch {
-        /* restricted pages (Web Store, PDF viewer, …) */
-      }
-    })
-  );
-}
-
 chrome.runtime.onInstalled.addListener(() => {
   ensureJobsPollAlarm();
+  // Tabs opened before an install/update/reload still run the previous content scripts, whose
+  // chrome.runtime is dead ("Extension context invalidated"). Give them a fresh copy so the
+  // panel keeps working without a manual page refresh.
   reinjectContentScripts().catch(() => {});
 });
+
+async function reinjectContentScripts() {
+  const manifest = chrome.runtime.getManifest();
+  const [topEntry, frameEntry] = manifest.content_scripts || [];
+  const tabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] });
+  await Promise.all(
+    tabs
+      .filter((t) => t.id != null && !t.discarded)
+      .map(async (tab) => {
+        try {
+          if (topEntry?.css?.length) {
+            await chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: topEntry.css });
+          }
+          if (topEntry?.js?.length) {
+            await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: topEntry.js });
+          }
+          if (frameEntry?.js?.length) {
+            await chrome.scripting.executeScript({
+              target: { tabId: tab.id, allFrames: true },
+              files: frameEntry.js,
+            });
+          }
+        } catch {
+          /* restricted pages (Web Store, PDFs, error pages) can't be scripted */
+        }
+      })
+  );
+}
 
 chrome.runtime.onStartup.addListener(() => {
   ensureJobsPollAlarm();
 });
 
 ensureJobsPollAlarm();
+
+/** Fast non-cryptographic string hash (FNV-1a, 32-bit) for cache keys. */
+function hashString(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36) + s.length.toString(36);
+}
 
 async function handleMessage(message, sender = {}) {
   const api = await getApiBase();
@@ -308,40 +320,60 @@ async function handleMessage(message, sender = {}) {
       return { ok: true, data };
     }
 
-    case 'FRAMES_CALL': {
-      // Run a HiddenStar frame function (frameCollect / frameFill / frameCollectFilled) inside the
-      // tab's sub-frames — embedded application forms the top-frame panel cannot reach.
+    // ── Embedded application forms (iframes): see content/frameAgent.js
+    case 'FRAMES_PROBE': {
       const tabId = sender.tab?.id;
       if (tabId == null) return { ok: true, data: [] };
-      const { fn, arg = null, frameIds } = message.payload || {};
-      const target = frameIds?.length ? { tabId, frameIds } : { tabId, allFrames: true };
-      let results = [];
       try {
-        results = await chrome.scripting.executeScript({
-          target,
-          func: async (name, input) => {
-            if (window.top === window) return null;
-            const HS = window.HiddenStar;
-            if (!HS || typeof HS[name] !== 'function') return null;
-            return await HS[name](input);
-          },
-          args: [fn, arg],
+        const results = await chrome.scripting.executeScript({
+          target: { tabId, allFrames: true },
+          func: () =>
+            window !== window.top && window.HiddenStar?.frameProbe ? window.HiddenStar.frameProbe() : null,
         });
-      } catch (err) {
-        console.warn('FRAMES_CALL failed', err);
+        const frames = (results || [])
+          .filter((r) => r.frameId !== 0 && r.result)
+          .map((r) => ({ frameId: r.frameId, ...r.result }))
+          .sort((a, b) => b.questions + b.resumeInputs - (a.questions + a.resumeInputs));
+        return { ok: true, data: frames };
+      } catch {
+        return { ok: true, data: [] };
       }
-      return {
-        ok: true,
-        data: (results || []).filter((r) => r && r.result).map((r) => ({ frameId: r.frameId, result: r.result })),
-      };
+    }
+
+    case 'FRAME_CALL': {
+      const tabId = sender.tab?.id;
+      const { frameId, op, args } = message.payload || {};
+      if (tabId == null || frameId == null) throw new Error('No frame to call');
+      const res = await chrome.tabs.sendMessage(tabId, { type: 'HS_FRAME_OP', op, args }, { frameId });
+      return res || { ok: false, error: 'The embedded form did not respond' };
+    }
+
+    case 'FRAME_PROGRESS': {
+      const tabId = sender.tab?.id;
+      if (tabId != null) {
+        chrome.tabs
+          .sendMessage(tabId, { type: 'HS_FRAME_PROGRESS', item: message.payload?.item }, { frameId: 0 })
+          .catch(() => {});
+      }
+      return { ok: true };
     }
 
     case 'PARSE_RESUME_HISTORY': {
+      // Parsing is an LLM call (several seconds): cache per resume content across pages/tabs
+      const p = message.payload || {};
+      const cacheKey = `resumeHistory:${hashString(`${p.resumeName || ''}|${p.resumeText || ''}|${p.resumeDataUrl || ''}`)}`;
+      const cached = (await chrome.storage.local.get(cacheKey))[cacheKey];
+      if (cached?.data) return { ok: true, data: cached.data, cached: true };
       const { openaiApiKey } = await chrome.storage.sync.get({ openaiApiKey: '' });
       const data = await apiJson('/api/resume/history', {
         method: 'POST',
-        body: { ...message.payload, apiKey: openaiApiKey || undefined },
+        body: { ...p, apiKey: openaiApiKey || undefined },
       });
+      // Keep only the latest resume's entry
+      const all = await chrome.storage.local.get(null);
+      const stale = Object.keys(all).filter((k) => k.startsWith('resumeHistory:') && k !== cacheKey);
+      if (stale.length) await chrome.storage.local.remove(stale);
+      await chrome.storage.local.set({ [cacheKey]: { at: Date.now(), data } });
       return { ok: true, data };
     }
 

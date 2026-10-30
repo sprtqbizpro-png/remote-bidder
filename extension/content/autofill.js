@@ -3,7 +3,7 @@
  */
 (function () {
   const HS = (window.HiddenStar = window.HiddenStar || {});
-  // Listed in two manifest entries (top frame bundle + all frames for embedded forms): load once
+  // Also listed in the all-frames entry (for embedded application forms): load once per frame
   if (HS.__autofillLoaded) return;
   HS.__autofillLoaded = true;
 
@@ -3469,15 +3469,18 @@
         /* ignore */
       }
     }
-    await sleep(30);
+    await sleep(80);
 
     // 1) Open full list first (empty filter) so we can score real options
     typeComboboxFilter(el, '');
     fireKey(el, 'ArrowDown', 40);
-    let options = await waitForListboxOptions(el, { maxMs: 450 });
+    await sleep(140);
+
+    let options = findOpenListboxOptions(el);
     if (!options.length) {
       fireKey(el, 'ArrowDown', 40);
-      options = await waitForListboxOptions(el, { maxMs: 350 });
+      await sleep(120);
+      options = findOpenListboxOptions(el);
     }
 
     let best = pickBestOption(options, candidates);
@@ -3487,8 +3490,8 @@
       for (const filterText of filters) {
         typeComboboxFilter(el, filterText);
         fireKey(el, 'ArrowDown', 40);
-        // Typeahead lists (e.g. school search) load from the network: allow longer
-        options = await waitForListboxOptions(el, { maxMs: 1200 });
+        await sleep(140);
+        options = findOpenListboxOptions(el);
         best = pickBestOption(options, candidates);
         if (best) break;
       }
@@ -3502,7 +3505,8 @@
         (optLabel.length <= 32 ? optLabel : filters[0] || '');
       if (shortOpt) {
         typeComboboxFilter(el, shortOpt);
-        const refined = await waitForListboxOptions(el, { maxMs: 600 });
+        await sleep(100);
+        const refined = findOpenListboxOptions(el);
         const again = pickBestOption(refined, candidates) || pickBestOption(refined, [optLabel, ...candidates]);
         if (again) best = again;
       }
@@ -3548,29 +3552,6 @@
       }
     }
     return ok;
-  }
-
-  /**
-   * Wait for the combobox's option list instead of a fixed sleep: returns once options are
-   * present and unchanged for stableMs (fast UIs ~80ms; network typeahead up to maxMs).
-   */
-  async function waitForListboxOptions(el, { maxMs = 600, stableMs = 60 } = {}) {
-    const start = Date.now();
-    let lastSig = null;
-    let lastChange = start;
-    let opts = [];
-    while (Date.now() - start < maxMs) {
-      opts = findOpenListboxOptions(el);
-      const sig = opts.map(optionNodeText).join('|');
-      if (sig !== lastSig) {
-        lastSig = sig;
-        lastChange = Date.now();
-      } else if (opts.length && Date.now() - lastChange >= stableMs) {
-        return opts;
-      }
-      await sleep(25);
-    }
-    return opts;
   }
 
   function fillSelect(el, answer, question = '') {
@@ -4029,7 +4010,8 @@
     }
 
     // Second pass: choice buttons / radios that were locked on the first pass
-    await settleUi(350);
+    // (the unlock wait is only paid when something is actually left unfilled)
+    if (items.some((it) => !it.filled && it.id !== '__resume__')) await settleUi(350);
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
       if (item.filled || item.id === '__resume__') continue;
@@ -4088,8 +4070,10 @@
     }
 
     // Final hard guarantee: every sponsorship Yes/No on the page → No
-    await settleUi(200);
-    await forceAllSponsorshipNos();
+    if (findSponsorshipChoicePairs().length) {
+      await settleUi(200);
+      await forceAllSponsorshipNos();
+    }
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
       if (item.filled) continue;
@@ -4630,95 +4614,6 @@
     }
     historyCache.at = 0;
     return result;
-  };
-
-  // ─── Embedded application forms (iframes) ───────────────────
-  // Career sites often embed the ATS form in an iframe (e.g. careers.airbnb.com → Greenhouse).
-  // The top frame drives autofill and reaches these frames through the background
-  // (chrome.scripting.executeScript into each frame's isolated world).
-
-  function dataUrlToFile(dataUrl, name, mime) {
-    const [head, body] = String(dataUrl).split(',');
-    const isB64 = /;base64/i.test(head);
-    const raw = isB64 ? atob(body) : decodeURIComponent(body);
-    const bytes = new Uint8Array(raw.length);
-    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-    return new File([bytes], name || 'resume.pdf', { type: mime || head.match(/data:([^;]+)/)?.[1] || '' });
-  }
-
-  /** What this (sub)frame has to fill — serializable, for the top frame. */
-  HS.frameCollect = function frameCollect() {
-    if (window.top === window) return null;
-    const questions = HS.collectQuestions();
-    const resumeInputs = HS.findResumeInputs().length;
-    const hasHistory = HS.hasHistorySections();
-    if (!questions.length && !resumeInputs && !hasHistory) return null;
-    return {
-      url: location.href,
-      resumeInputs,
-      hasHistory,
-      questions: questions.map((q) => ({
-        id: q.id,
-        question: q.question,
-        tag: q.tag,
-        type: q.type,
-        placeholder: q.placeholder,
-        options: serializableOptions(q.options),
-        required: HS.isRequiredQuestion(q),
-      })),
-    };
-  };
-
-  let frameLearning = false;
-
-  /** Fill this (sub)frame: resume file, work/education history, then answers. */
-  HS.frameFill = async function frameFill({ answers = [], history = null, resume = null } = {}) {
-    const out = { filled: 0, resumeFilled: 0, historyEntries: [], items: [] };
-    if (window.top === window) return out;
-    if (resume?.dataUrl && HS.findResumeInputs().length) {
-      try {
-        out.resumeFilled = HS.fillResumeInputs(dataUrlToFile(resume.dataUrl, resume.name, resume.mime)) || 0;
-      } catch {
-        /* ignore */
-      }
-    }
-    if (history && HS.hasHistorySections()) {
-      out.historyEntries = (await HS.fillHistory(history)).entries;
-    }
-    if (answers.length) {
-      const r = await HS.fillAnswers(answers);
-      out.filled = typeof r === 'number' ? r : r?.filled || 0;
-      out.items = (r?.items || []).map((i) => ({
-        id: i.id,
-        question: i.question,
-        filled: !!i.filled,
-        source: i.source || null,
-        intent: i.intent || null,
-        required: i.required,
-      }));
-    }
-    // Remember the user's own edits in this frame for the next application
-    if (!frameLearning && HS.startAnswerLearning) {
-      frameLearning = true;
-      HS.startAnswerLearning(
-        (pairs) => {
-          try {
-            chrome.runtime.sendMessage({
-              type: 'SAVE_FIXED_ANSWERS_BULK',
-              payload: { answers: pairs, onlyRepetitive: true },
-            });
-          } catch {
-            /* extension reloaded */
-          }
-        },
-        { debounceMs: 900 }
-      );
-    }
-    return out;
-  };
-
-  HS.frameCollectFilled = function frameCollectFilled() {
-    return window.top === window ? null : HS.collectFilledAnswers();
   };
 
   HS.findResumeInputs = function findResumeInputs() {

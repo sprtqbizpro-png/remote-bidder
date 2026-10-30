@@ -33,22 +33,6 @@ import {
 
 const router = Router();
 
-const GENERATE_CONCURRENCY = 5;
-
-/** Promise.all with a concurrency cap; results keep input order. */
-async function mapLimit(list, limit, fn) {
-  const out = new Array(list.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < list.length) {
-      const i = next++;
-      out[i] = await fn(list[i], i);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, list.length) }, worker));
-  return out;
-}
-
 /** Fixed rows indexed by every exact phrasing they were answered under. */
 function aliasIndex(rows) {
   const index = new Map();
@@ -435,73 +419,82 @@ router.post('/generate', async (req, res) => {
       }
     }
 
-    // ── Pass 3: generate what the bank cannot answer — concurrently (one OpenAI call per
-    // open-ended question; sequential calls made long applications slow)
-    const rows = await mapLimit(items, GENERATE_CONCURRENCY, async (it) => {
-      const { questionText, fieldMeta, intent } = it;
-      const fieldId = it.id;
+    // ── Pass 3: generate what the bank cannot answer (in parallel — this used to be one
+    // OpenAI round-trip per question, back to back)
+    const toGenerate = [];
+    for (const it of items) {
+      if (it.coverLetter || it.answer) continue;
+      const { questionText, fieldMeta } = it;
+      const shortField = isShortPersonalField(questionText, fieldMeta);
+      const complex = isComplexQuestion(questionText, fieldMeta);
+      const openAiOk = complex || isOpenEndedForAi(questionText, fieldMeta) || !shortField;
+      if (shortField && !openAiOk) {
+        it.source = 'unmatched';
+        skippedShort++;
+      } else if (openAiOk) {
+        toGenerate.push(it);
+      } else {
+        it.source = 'unmatched';
+        skippedShort++;
+      }
+    }
+
+    const GENERATE_CONCURRENCY = 5;
+    let cursor = 0;
+    async function generateWorker() {
+      while (cursor < toGenerate.length) {
+        const it = toGenerate[cursor++];
+        try {
+          it.answer = await generateAnswer({
+            question: it.questionText,
+            companyName,
+            roleName,
+            jobDescription,
+            fixedAnswers: answerBank,
+            resumeContext,
+            apiKey: openaiKey,
+            style: answerGenerationStyle(it.questionText, it.fieldMeta),
+            options: it.fieldMeta.options,
+          });
+          it.source = 'openai';
+          generated++;
+        } catch (err) {
+          openaiError = err.message || 'OpenAI failed';
+          it.answer = '';
+          it.source = 'error';
+        }
+      }
+    }
+    await Promise.all(
+      Array.from({ length: Math.min(GENERATE_CONCURRENCY, toGenerate.length) }, generateWorker)
+    );
+
+    for (const it of items) {
+      const { questionText, intent } = it;
       if (it.coverLetter) {
-        return {
-          id: fieldId,
+        results.push({
+          id: it.id,
           question: questionText,
           answer: '',
           source: 'skipped',
           intent: 'cover_letter',
           kind: 'cover_letter',
-        };
+        });
+        continue;
       }
-
-      let answer = it.answer;
-      let source = it.source;
-      if (source === 'profile') fromProfile++;
-      if (source === 'remembered') fromRemembered++;
-
-      if (!answer) {
-        const shortField = isShortPersonalField(questionText, fieldMeta);
-        const complex = isComplexQuestion(questionText, fieldMeta);
-        const openAiOk = complex || isOpenEndedForAi(questionText, fieldMeta) || !shortField;
-
-        if (shortField && !openAiOk) {
-          answer = '';
-          source = 'unmatched';
-          skippedShort++;
-        } else if (openAiOk) {
-          try {
-            answer = await generateAnswer({
-              question: questionText,
-              companyName,
-              roleName,
-              jobDescription,
-              fixedAnswers: answerBank,
-              resumeContext,
-              apiKey: openaiKey,
-              style: answerGenerationStyle(questionText, fieldMeta),
-              options: fieldMeta.options,
-            });
-            source = 'openai';
-            generated++;
-          } catch (err) {
-            openaiError = err.message || 'OpenAI failed';
-            answer = '';
-            source = 'error';
-          }
-        } else {
-          source = 'unmatched';
-          skippedShort++;
-        }
-      }
+      if (it.source === 'profile') fromProfile++;
+      if (it.source === 'remembered') fromRemembered++;
 
       // Nothing is learned here: the extension posts the values that actually ended up on the
       // page (after the user's review) to /fixed/bulk, which stores them by meaning.
-      return {
-        id: fieldId,
+      results.push({
+        id: it.id,
         question: questionText,
-        answer: answer || '',
-        source: source || 'unmatched',
+        answer: it.answer || '',
+        source: it.source || 'unmatched',
         intent,
-      };
-    });
-    results.push(...rows);
+      });
+    }
 
     res.json({
       answers: results,
