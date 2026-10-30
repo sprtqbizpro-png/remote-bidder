@@ -117,16 +117,23 @@ async function playSaveSound() {
   }
 }
 
-async function notifyAppliedJobSaved({ companyName, roleName, playSound = true } = {}) {
+/** Display name for whoever saved a job ({ name, email } from the API's createdBy). */
+function creatorLabel(createdBy) {
+  return String(createdBy?.name || createdBy?.email || '').trim();
+}
+
+async function notifyAppliedJobSaved({ companyName, roleName, createdBy = null, playSound = true } = {}) {
   const company = companyName || 'Company';
   const role = roleName || 'Role';
+  const creator = creatorLabel(createdBy);
   const id = `ks-applied-${Date.now()}`;
   try {
     await chrome.notifications.create(id, {
       type: 'basic',
       iconUrl: 'icons/icon128.png',
-      title: 'King Star — Application saved',
-      message: `${role} at ${company} was added to Applied jobs.`,
+      title: creator ? `Applied job saved by ${creator}` : 'King Star — Application saved',
+      message: `${role}\n${company}`,
+      contextMessage: creator ? `Saved by ${creator} · Applied jobs` : 'Added to Applied jobs',
       priority: 2,
       requireInteraction: false,
       silent: false,
@@ -177,6 +184,7 @@ async function pollAppliedJobsForNotifications() {
       await notifyAppliedJobSaved({
         companyName: job.companyName,
         roleName: job.roleName,
+        createdBy: job.createdBy,
         playSound: true,
       });
     }
@@ -568,6 +576,7 @@ async function handleMessage(message, sender = {}) {
       await notifyAppliedJobSaved({
         companyName: data?.companyName || message.payload?.companyName,
         roleName: data?.roleName || message.payload?.roleName,
+        createdBy: data?.createdBy,
         playSound: true,
       });
 
@@ -578,6 +587,7 @@ async function handleMessage(message, sender = {}) {
       return notifyAppliedJobSaved({
         companyName: message.payload?.companyName,
         roleName: message.payload?.roleName,
+        createdBy: message.payload?.createdBy,
         playSound: message.payload?.playSound !== false,
       });
     }

@@ -3,8 +3,27 @@
  */
 (function () {
   const HS = window.HiddenStar;
-  if (!HS || window.__hsContentLoaded) return;
-  window.__hsContentLoaded = true;
+  if (!HS) return;
+  // After an extension reload Chrome keeps the old copy's globals in the tab. Only a *live*
+  // copy blocks loading; a dead one (its chrome.runtime is gone) is retired and replaced.
+  const prevInstance = window.__hsContentInstance;
+  if (prevInstance?.alive?.()) return;
+  try {
+    prevInstance?.retire?.();
+  } catch {
+    /* the old copy may be too old to know how */
+  }
+  const ownRuntime = chrome.runtime;
+  window.__hsContentInstance = {
+    alive: () => {
+      try {
+        return !!ownRuntime?.id;
+      } catch {
+        return false;
+      }
+    },
+    retire: () => retireInstance(),
+  };
 
   let panel = null;
   let dock = null;
@@ -64,7 +83,7 @@
 
   function extensionAlive() {
     try {
-      return !!chrome.runtime?.id;
+      return !!ownRuntime?.id;
     } catch {
       return false;
     }
@@ -3675,12 +3694,68 @@
     }
   }
 
-  function pageLooksApplicationSubmitted() {
+  /*
+   * Auto-save on submit confirmation. It used to scan the whole page for phrases like
+   * "thank you for your application" — which many job descriptions (and our own panel's copy
+   * of the description) contain — so posting pages were saved without anything being submitted.
+   * Now it needs: a real submit by the user (kept for 10 min across the post-submit navigation),
+   * then a confirmation message in a short visible block outside King Star's UI that was not
+   * already on the page when the user submitted.
+   */
+  const SUBMIT_ATTEMPT_KEY = 'hsSubmitAttemptAt';
+  const SUBMIT_WINDOW_MS = 10 * 60 * 1000;
+  const CONFIRM_RE =
+    /application (has been |was )?(submitted|received|sent)|thanks? (you )?for (applying|your application|submitting)|successfully (applied|submitted)|we('ve| have) received your application|your application (is|has been) (in|complete|submitted)|application complete|submitted successfully/i;
+  const SUBMIT_BUTTON_RE =
+    /^(submit|submit( my| your)? application|send( my)? application|complete( my)? application|finish( application)?|submit (&|and) apply)$/i;
+  const OWN_UI_SELECTOR = '#hs-panel, #hs-dock, #hs-info-dialog, #hs-job-dialog, #hs-company-dup-dialog, [data-hs-stale]';
+  let submitBaseline = null; // confirmation texts already on the page at submit time
+
+  function confirmationTexts() {
+    const out = [];
+    const nodes = document.querySelectorAll('h1, h2, h3, h4, p, span, div, [role="alert"], [role="status"]');
+    for (const n of nodes) {
+      if (n.childElementCount > 3 || n.closest(OWN_UI_SELECTOR)) continue;
+      const t = (n.textContent || '').replace(/\s+/g, ' ').trim();
+      // Long blocks are posting copy ("…Thank you for your application!" at the end of a JD)
+      if (!t || t.length > 300 || !CONFIRM_RE.test(t)) continue;
+      if (n.getClientRects().length) out.push(t);
+    }
+    return out;
+  }
+
+  function noteSubmitAttempt() {
+    submitBaseline = new Set(confirmationTexts());
     try {
-      const t = String(document.body?.innerText || '').slice(0, 16000);
-      return /application (has been )?submitted|thanks for applying|thank you for (your )?application|application received|successfully applied|we('ve| have) received your application|your application was sent|application complete|submitted successfully/i.test(
-        t
-      );
+      sessionStorage.setItem(SUBMIT_ATTEMPT_KEY, String(Date.now()));
+    } catch {
+      /* storage blocked */
+    }
+  }
+
+  function recentSubmitAttempt() {
+    try {
+      const at = Number(sessionStorage.getItem(SUBMIT_ATTEMPT_KEY));
+      return !!at && Date.now() - at < SUBMIT_WINDOW_MS;
+    } catch {
+      return false;
+    }
+  }
+
+  function clearSubmitAttempt() {
+    submitBaseline = null;
+    try {
+      sessionStorage.removeItem(SUBMIT_ATTEMPT_KEY);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function pageLooksApplicationSubmitted() {
+    if (!recentSubmitAttempt()) return false;
+    try {
+      // After the post-submit navigation there is no baseline: any confirmation counts
+      return confirmationTexts().some((t) => !submitBaseline || !submitBaseline.has(t));
     } catch {
       return false;
     }
@@ -3693,19 +3768,43 @@
     const maybeAutoSave = () => {
       if (view !== 'apply' || appliedSaveInFlight) return;
       if (!pageLooksApplicationSubmitted()) return;
-      saveAppliedJob({ auto: true }).catch(() => {});
+      saveAppliedJob({ auto: true })
+        .then((r) => {
+          if (r?.ok && !r.skipped) clearSubmitAttempt();
+        })
+        .catch(() => {});
     };
 
     document.addEventListener(
       'submit',
-      () => {
+      (e) => {
+        if (e.target?.closest?.(OWN_UI_SELECTOR)) return;
+        noteSubmitAttempt();
         setTimeout(maybeAutoSave, 1200);
         setTimeout(maybeAutoSave, 3500);
       },
       true
     );
 
+    // SPA forms (Ashby, Workday, LinkedIn…) submit from a button without a form submit event
+    document.addEventListener(
+      'click',
+      (e) => {
+        const btn = e.target?.closest?.('button, input[type="submit"], input[type="button"], [role="button"], a');
+        if (!btn || btn.closest(OWN_UI_SELECTOR)) return;
+        const text = String(btn.innerText || btn.value || btn.getAttribute('aria-label') || '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (!SUBMIT_BUTTON_RE.test(text)) return;
+        noteSubmitAttempt();
+        setTimeout(maybeAutoSave, 1500);
+        setTimeout(maybeAutoSave, 4000);
+      },
+      true
+    );
+
     // Many ATS navigate or rewrite DOM after submit without a classic form submit
+    // (cheap when nothing was submitted: recentSubmitAttempt() is checked first)
     const mo = new MutationObserver(() => {
       maybeAutoSave();
     });
@@ -3865,8 +3964,10 @@
       }
 
       const jobInfoOk = !!res.data?.jobInfoDriveLink;
+      const creator = res.data?.createdBy?.name || res.data?.createdBy?.email || '';
+      const savedTitle = `“${res.data?.roleName || info.roleName}” at ${res.data?.companyName || info.companyName}`;
       const parts = [
-        'Saved to Applied jobs (web app)',
+        creator ? `Saved ${savedTitle} by ${creator}` : `Saved ${savedTitle} to Applied jobs`,
         resumeUploadNote,
         jobInfoOk ? 'job-info .txt on Drive' : null,
         remembered > 0 ? `remembered ${remembered} answer(s)` : null,

@@ -4,8 +4,8 @@
 (function () {
   const HS = (window.HiddenStar = window.HiddenStar || {});
   // Also listed in the all-frames entry (for embedded application forms): load once per frame
-  if (HS.__autofillLoaded) return;
-  HS.__autofillLoaded = true;
+  if (HS.__autofillRuntime && HS.__autofillRuntime === chrome.runtime && chrome.runtime?.id) return;
+  HS.__autofillRuntime = chrome.runtime;
 
   const SKIP_TYPES = new Set([
     'hidden',

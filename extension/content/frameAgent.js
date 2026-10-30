@@ -9,15 +9,18 @@
 (function () {
   if (window === window.top) return;
   const HS = window.HiddenStar;
-  if (!HS || !HS.collectQuestions || HS.__frameAgent) return;
-  HS.__frameAgent = true;
+  if (!HS || !HS.collectQuestions) return;
+  // Same rule as content.js: a copy left over from before an extension reload doesn't count
+  if (HS.__frameAgentRuntime && HS.__frameAgentRuntime === chrome.runtime && chrome.runtime?.id) return;
+  HS.__frameAgentRuntime = chrome.runtime;
+  const ownRuntime = chrome.runtime;
 
   let cancelled = false;
 
   function send(type, payload) {
     try {
-      if (!chrome.runtime?.id) return Promise.reject(new Error('Extension context invalidated'));
-      return chrome.runtime.sendMessage({ type, payload });
+      if (!ownRuntime?.id) return Promise.reject(new Error('Extension context invalidated'));
+      return ownRuntime.sendMessage({ type, payload });
     } catch (err) {
       return Promise.reject(err);
     }
