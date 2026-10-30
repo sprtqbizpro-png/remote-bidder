@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "King Star Job Bidder",
-  "version": "1.4.20",
+  "version": "1.4.21",
   "description": "Extract job details, autofill applications with AI, save resumes to Google Drive, and sync with King Star.",
   "permissions": [
     "storage",

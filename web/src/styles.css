@@ -4150,3 +4150,29 @@ main {
   display: flex;
   gap: 0.5rem;
 }
+
+/* Fixed answers: owner "Clear all" */
+.jr-fixed-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-shrink: 0;
+}
+.jr-fixed-clear-all {
+  border: 1px solid #e7b9b3;
+  background: #fff;
+  color: #b3392f;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.jr-fixed-clear-all:hover:not(:disabled) {
+  background: #fdf1ef;
+}
+.jr-fixed-clear-all:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

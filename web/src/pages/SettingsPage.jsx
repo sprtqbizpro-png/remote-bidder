@@ -142,6 +142,29 @@ export default function SettingsPage() {
     setFixed((prev) => prev.filter((x) => x.id !== id));
   }
 
+  const [clearing, setClearing] = useState(false);
+  async function clearAllFixed() {
+    if (!fixed.length) return;
+    const ok = window.confirm(
+      `Delete all ${fixed.length} fixed answers? This cannot be undone.\n\n` +
+        'Your Profile is not affected — autofill keeps using it, and new answers are learned again as you apply.'
+    );
+    if (!ok) return;
+    setClearing(true);
+    setMsg('');
+    setError('');
+    try {
+      const res = await api.clearFixedAnswers();
+      setFixed([]);
+      setEditing(null);
+      setMsg(`Cleared ${res.removed ?? 'all'} fixed answers.`);
+    } catch (err) {
+      setError(err.message || 'Could not clear fixed answers.');
+    } finally {
+      setClearing(false);
+    }
+  }
+
   return (
     <div className="jr-page-settings">
       <header className="jr-settings-hero">
@@ -288,7 +311,19 @@ export default function SettingsPage() {
                 US residence, …). Prefer <Link to="/profile">Profile</Link> when possible.
               </p>
             </div>
-            <span className="status-pill muted-pill">{fixed.length} saved</span>
+            <div className="jr-fixed-head-actions">
+              <span className="status-pill muted-pill">{fixed.length} saved</span>
+              {isOwner && fixed.length > 0 ? (
+                <button
+                  type="button"
+                  className="jr-fixed-clear-all"
+                  onClick={clearAllFixed}
+                  disabled={clearing}
+                >
+                  {clearing ? 'Clearing…' : 'Clear all'}
+                </button>
+              ) : null}
+            </div>
           </div>
 
           <form onSubmit={addFixed} className="jr-settings-form jr-settings-form-inline">

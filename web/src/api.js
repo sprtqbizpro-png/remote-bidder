@@ -54,6 +54,7 @@ export const api = {
     }),
   updateFixedAnswer: (id, payload) =>
     request(`/api/answers/fixed/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  clearFixedAnswers: () => request('/api/answers/fixed', { method: 'DELETE' }),
   deleteFixedAnswer: (id) =>
     request(`/api/answers/fixed/${id}`, { method: 'DELETE' }),
   googleStatus: () => request('/api/auth/google/status'),

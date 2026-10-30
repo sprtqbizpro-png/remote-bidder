@@ -16,7 +16,68 @@ const DEFAULT = {
   users: [],
   sessions: [],
   profiles: {},
+  /** { [collection]: { [id]: deletedAtMs } } — see "Deletions" below */
+  tombstones: {},
 };
+
+/*
+ * Deletions. Saves and per-request reloads merge this instance's data with the stored copy
+ * (so rows created on another serverless instance are not lost). A plain union also brought
+ * back every row deleted here — single Delete, "Clear all", job Remove, sign-out, duplicate
+ * cleanup. Deleted ids are therefore recorded as tombstones, stored with the data, and the
+ * merge drops tombstoned rows. Tombstones expire after 30 days.
+ */
+const TRACKED = { applied_jobs: 'id', fixed_answers: 'id', users: 'id', sessions: 'token' };
+const TOMBSTONE_TTL_MS = 30 * 24 * 3600 * 1000;
+/** Ids per collection as of the last load / save: the baseline for spotting local deletes. */
+let syncedIds = null;
+
+function idsOf(store) {
+  const out = {};
+  for (const [coll, key] of Object.entries(TRACKED)) {
+    out[coll] = new Set((store?.[coll] || []).map((r) => r?.[key]).filter((v) => v != null));
+  }
+  return out;
+}
+
+/** Tombstone ids that were in the baseline but are gone from the in-memory store. */
+function recordDeletions(store) {
+  store.tombstones = store.tombstones || {};
+  if (!syncedIds) return;
+  const now = Date.now();
+  const present = idsOf(store);
+  for (const coll of Object.keys(TRACKED)) {
+    const tomb = (store.tombstones[coll] = store.tombstones[coll] || {});
+    for (const id of syncedIds[coll] || []) {
+      if (!present[coll].has(id)) tomb[id] = now;
+    }
+    // Re-created with the same id: alive again
+    for (const id of present[coll]) {
+      if (tomb[id] && !(syncedIds[coll] || new Set()).has(id)) delete tomb[id];
+    }
+  }
+}
+
+function mergeTombstones(a = {}, b = {}) {
+  const cutoff = Date.now() - TOMBSTONE_TTL_MS;
+  const out = {};
+  for (const coll of Object.keys(TRACKED)) {
+    const merged = {};
+    for (const src of [a?.[coll] || {}, b?.[coll] || {}]) {
+      for (const [id, at] of Object.entries(src)) {
+        if (at >= cutoff) merged[id] = Math.max(merged[id] || 0, at);
+      }
+    }
+    out[coll] = merged;
+  }
+  return out;
+}
+
+function withoutTombstoned(list, coll, tombstones) {
+  const tomb = tombstones?.[coll] || {};
+  const key = TRACKED[coll];
+  return (list || []).filter((r) => !tomb[r?.[key]]);
+}
 
 /** @type {ReturnType<typeof structuredClone>|null} */
 let state = null;
@@ -156,19 +217,28 @@ function mergeById(localList, remoteList, idKey = 'id') {
 function mergeStoreBlobs(local, remote) {
   const baseRemote = { ...structuredClone(DEFAULT), ...(remote || {}) };
   const baseLocal = { ...structuredClone(DEFAULT), ...(local || {}) };
+  const tombstones = mergeTombstones(baseLocal.tombstones, baseRemote.tombstones);
+  const live = (coll, list) => withoutTombstoned(list, coll, tombstones);
 
-  const sessions = mergeById(
-    (baseLocal.sessions || []).filter((s) => s?.token && s.expiresAt > Date.now()),
-    (baseRemote.sessions || []).filter((s) => s?.token && s.expiresAt > Date.now()),
-    'token'
+  const sessions = live(
+    'sessions',
+    mergeById(
+      (baseLocal.sessions || []).filter((s) => s?.token && s.expiresAt > Date.now()),
+      (baseRemote.sessions || []).filter((s) => s?.token && s.expiresAt > Date.now()),
+      'token'
+    )
   );
 
-  const applied_jobs = mergeById(baseLocal.applied_jobs, baseRemote.applied_jobs, 'id').sort(
-    (a, b) => String(b.applied_at || '').localeCompare(String(a.applied_at || ''))
-  );
+  const applied_jobs = live(
+    'applied_jobs',
+    mergeById(baseLocal.applied_jobs, baseRemote.applied_jobs, 'id')
+  ).sort((a, b) => String(b.applied_at || '').localeCompare(String(a.applied_at || '')));
 
-  const users = mergeById(baseLocal.users, baseRemote.users, 'id');
-  const fixed_answers = mergeById(baseLocal.fixed_answers, baseRemote.fixed_answers, 'id');
+  const users = live('users', mergeById(baseLocal.users, baseRemote.users, 'id'));
+  const fixed_answers = live(
+    'fixed_answers',
+    mergeById(baseLocal.fixed_answers, baseRemote.fixed_answers, 'id')
+  );
 
   const profiles = {
     ...(baseRemote.profiles || {}),
@@ -191,6 +261,7 @@ function mergeStoreBlobs(local, remote) {
     users,
     sessions,
     profiles,
+    tombstones,
   };
 }
 
@@ -209,7 +280,9 @@ async function persistMerged(snapshot) {
         state.fixed_answers = toSave.fixed_answers;
         state.profiles = toSave.profiles;
         state.settings = toSave.settings;
+        state.tombstones = toSave.tombstones;
         if (toSave.google_tokens) state.google_tokens = toSave.google_tokens;
+        syncedIds = idsOf(state);
       }
     } catch (err) {
       console.warn('[db] merge before save skipped:', err?.message || err);
@@ -221,6 +294,8 @@ async function persistMerged(snapshot) {
 function write(data) {
   ensureReady();
   state = data;
+  recordDeletions(state);
+  syncedIds = idsOf(state);
   if (!persistFn) return;
   const snapshot = structuredClone(state);
   writeQueue = writeQueue
@@ -276,6 +351,8 @@ export async function initDb() {
     persistFn = (data) => backend.save(data);
     loadFn = () => backend.load();
     state = await backend.load();
+    state.tombstones = state.tombstones || {};
+    syncedIds = idsOf(state);
     console.log(
       databaseUrl
         ? '[db] Using Postgres (DATABASE_URL)'
@@ -310,6 +387,7 @@ export async function reloadDb() {
   reloadPromise = (async () => {
     const fresh = await loadFn();
     state = mergeLoadedState(state, fresh);
+    syncedIds = idsOf(state);
   })();
   try {
     await reloadPromise;

@@ -159,7 +159,8 @@
       const res = await pending;
       if (!res?.ok) throw new Error(res?.error || 'Could not get answers');
       meta = res.data.meta || {};
-      const r = await HS.fillAnswers(fillable(res.data.answers || []), { onItem: upsert });
+      let allAnswers = res.data.answers || [];
+      const r = await HS.fillAnswers(fillable(allAnswers), { onItem: upsert });
       filled += r?.filled || 0;
       (r?.items || []).forEach(upsert);
 
@@ -176,20 +177,29 @@
         if (!more?.ok) break;
         const r2 = await HS.fillAnswers(fillable(more.data.answers || []), { onItem: upsert, onlyListed: true });
         filled += r2?.filled || 0;
+        allAnswers = allAnswers.concat(more.data.answers || []);
+      }
+
+      // Settle + verify once, still inside the run; nothing writes after it returns
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      const empty = (HS.getQuestionFillState?.() || []).filter((st) => !st.filled);
+      if (empty.length && !cancelled) {
+        const ids = new Set(empty.map((st) => st.id));
+        const keys = new Set(empty.map((st) => questionKey(st.question)));
+        const retryList = fillable(allAnswers).filter((a) => a.answer && (ids.has(a.id) || keys.has(questionKey(a.question))));
+        if (retryList.length) {
+          await HS.fillAnswers(retryList, { onlyListed: true, onItem: (item) => item.filled && upsert(item) });
+        }
+      }
+      // Rows report what the form really holds
+      for (const st of HS.getQuestionFillState?.() || []) {
+        const prev = rows.get(st.id) || rows.get(questionKey(st.question));
+        if (prev) upsert({ ...prev, filled: st.filled, source: st.filled ? prev.source || 'page' : 'unmatched' });
       }
     }
 
-    // 5) Remember what ended up on the form, and keep learning from the user's edits
-    let remembered = 0;
-    try {
-      const pairs = HS.collectFilledAnswers ? HS.collectFilledAnswers() : [];
-      if (pairs.length) {
-        const saved = await send('SAVE_FIXED_ANSWERS_BULK', { answers: pairs, onlyRepetitive: true });
-        remembered = saved?.data?.saved || 0;
-      }
-    } catch {
-      /* non-fatal */
-    }
+    // 5) Learn only from the user's own edits (answers are also remembered when the job is saved)
+    const remembered = 0;
     startLearning();
 
     const list = [...rows.values()];

@@ -170,24 +170,6 @@
     });
   }
 
-  /**
-   * "Add a new job" in progress: lock the extract buttons and the job card below them
-   * (card dimmed, Copy / Edit / Reset disabled) so the half-extracted job can't be edited,
-   * copied or cleared mid-run.
-   */
-  function setAddJobBusy(busy) {
-    setBusy(['hs-extract', 'hs-extract-ai', 'hs-add-job', 'hs-reset', 'hs-edit-job', 'hs-copy-job'], busy);
-    for (const id of ['hs-job-card', 'hs-job-toolbar']) {
-      const el = document.getElementById(id);
-      if (!el) continue;
-      el.classList.toggle('is-busy', !!busy);
-      if (busy) el.setAttribute('aria-busy', 'true');
-      else el.removeAttribute('aria-busy');
-    }
-    // Copy has its own rule (needs a title or description) — restore it from the card state
-    if (!busy) syncJobCard();
-  }
-
   /*
    * Autofill heartbeat. Network steps (answer matching, AI writing, resume analysis) take
    * seconds with nothing changing on screen, which read as "stuck". While autofill runs, every
@@ -648,7 +630,7 @@
               <div class="jr-job-meta" id="hs-extract-meta"></div>
             </div>
           </div>
-          <div class="jr-job-toolbar" id="hs-job-toolbar" role="group" aria-label="Job actions">
+          <div class="jr-job-toolbar" role="group" aria-label="Job actions">
             <button type="button" id="hs-copy-job" class="jr-job-copy" title="Copy job title and description" ${hasJob ? '' : 'disabled'}>
               <span class="jr-job-copy-icon" aria-hidden="true">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
@@ -1106,7 +1088,7 @@
     if (card) card.hidden = !hasJob;
     const copyBtn = document.getElementById('hs-copy-job');
     if (copyBtn) {
-      copyBtn.disabled = !canCopy || extractInFlight;
+      copyBtn.disabled = !canCopy;
       copyBtn.title = canCopy
         ? 'Copy job title and description'
         : 'Add a job first to copy title & description';
@@ -2305,7 +2287,7 @@
   async function startAddNewJob({ forceLlm = false } = {}) {
     if (extractInFlight) return;
     ensurePanel();
-    setAddJobBusy(true);
+    setBusy(['hs-extract', 'hs-extract-ai', 'hs-reset', 'hs-add-job'], true);
     setStatus('Checking company against Applied jobs…', false, 'busy');
 
     try {
@@ -2315,7 +2297,7 @@
       if (companyName) {
         const existing = await listAppliedJobsForCompany(companyName);
         if (existing.length) {
-          setAddJobBusy(false);
+          setBusy(['hs-extract', 'hs-extract-ai', 'hs-reset', 'hs-add-job'], false);
           setStatus(
             `Found ${existing.length} saved job(s) at ${companyName}. Confirm to continue…`,
             false,
@@ -2343,7 +2325,7 @@
       await refreshExtract({ forceLlm });
     } catch (err) {
       setStatus(err.message || 'Could not start add job', true);
-      setAddJobBusy(false);
+      setBusy(['hs-extract', 'hs-extract-ai', 'hs-reset', 'hs-add-job'], false);
     }
   }
 
@@ -2352,7 +2334,7 @@
     if (view !== 'apply') await renderView('apply');
     extractInFlight = true;
     ensurePanel();
-    setAddJobBusy(true);
+    setBusy(['hs-extract', 'hs-extract-ai', 'hs-reset', 'hs-add-job'], true);
     setStatus('Extracting from this page…', false, 'busy');
 
     try {
@@ -2418,7 +2400,7 @@
       openJobDialog(finalInfo);
     } finally {
       extractInFlight = false;
-      setAddJobBusy(false);
+      setBusy(['hs-extract', 'hs-extract-ai', 'hs-reset', 'hs-add-job'], false);
       syncJobCard();
     }
   }
@@ -3118,8 +3100,31 @@
     return { state: 'clicked' };
   }
 
+  /** Bumped per run: anything left from an earlier run (or an earlier job page) is ignored. */
+  let autofillRunId = 0;
+  let autofillRunUrl = '';
+
+  /** Leftover state from the previous application must not steer this one. */
+  function resetAutofillRunState() {
+    progressChoiceOverrides = new Map();
+    progressValueBaseline = new Map();
+    answerLearnSig = '';
+    autofillRunUrl = location.href.split('#')[0];
+  }
+
+  /** The tab moved to another job (SPA boards) mid-run: stop instead of filling the new form. */
+  function autofillPageChanged() {
+    return !!autofillRunUrl && location.href.split('#')[0] !== autofillRunUrl;
+  }
+
   async function runAutofill({ afterApply = false } = {}) {
-    if (!afterApply) startAutofillTicker('Preparing autofill');
+    if (!afterApply) {
+      autofillRunId += 1;
+      resetAutofillRunState();
+      startAutofillTicker('Preparing autofill');
+    }
+    const runId = autofillRunId;
+    const stale = () => runId !== autofillRunId || autofillPageChanged();
     autofillCancelled = false;
     stopAnswerLearningWatch();
     setBusy(['hs-autofill'], true);
@@ -3374,7 +3379,7 @@
         allAnswers = res.data.answers || [];
         const answers = fillableAnswers(allAnswers);
         const onFillItem = (item) => {
-          if (autofillCancelled) return;
+          if (autofillCancelled || stale()) return;
           const qk = String(item.question || '')
             .toLowerCase()
             .replace(/[^a-z0-9]+/g, ' ')
@@ -3418,7 +3423,7 @@
         // Follow-up questions ("If yes, which visa?", "Please explain…") only appear after earlier
         // answers are set. Re-scan and answer anything new until the form stops growing.
         const askedKeys = new Set(asked.map((q) => progressQuestionKey(q.question)));
-        for (let pass = 0; pass < 3 && !autofillCancelled; pass++) {
+        for (let pass = 0; pass < 3 && !autofillCancelled && !stale(); pass++) {
           await new Promise((r) => setTimeout(r, 700));
           const fresh = HS.collectQuestions().filter((q) => {
             const k = progressQuestionKey(q.question);
@@ -3450,53 +3455,42 @@
             },
           });
         }
-        // Settle + verify, still inside the run (the board stays "busy"): fields that unlock late
-        // (Yes/No after other answers) get their one fill now, and every row's final state is read
-        // back from the page — so the result shown is what the form really holds and never
-        // drops afterwards. This replaces the two delayed retries that ran after "done".
-        setStatus('Checking every field was accepted', false, 'busy');
-        const answerFor = (it) =>
-          allAnswers.find((a) => a.answer && (a.id === it.id || progressQuestionKey(a.question) === progressQuestionKey(it.question)));
-        const readState = () => {
-          const st = HS.getQuestionFillState ? HS.getQuestionFillState() : [];
-          return {
-            byId: new Map(st.map((x) => [x.id, x])),
-            byQ: new Map(st.map((x) => [progressQuestionKey(x.question), x])),
-          };
-        };
-        const stateOf = (st, it) => st.byId.get(it.id) || st.byQ.get(progressQuestionKey(it.question));
-        await sleepMs(500);
-        if (autofillCancelled) throw new Error('cancelled');
-        let st = readState();
-        const pending = progressItems.filter((it) => {
-          if (it.id === '__resume__' || String(it.id).startsWith('__history_')) return false;
-          const now = stateOf(st, it);
-          return now && !now.filled && answerFor(it);
-        });
-        if (pending.length) {
-          setStatus(`Filling ${pending.length} field(s) that unlocked late`, false, 'busy');
-          const retryAnswers = fillableAnswers(pending.map(answerFor));
-          const pendingKeys = new Set(pending.map((it) => progressQuestionKey(it.question)));
-          await HS.fillAnswers(retryAnswers, {
-            onlyListed: true,
-            onItem: (item) => {
-              if (!item?.filled || !pendingKeys.has(progressQuestionKey(item.question))) return;
-              onFillItem(item);
-            },
-          });
-          await sleepMs(300);
-          st = readState();
+        if (autofillCancelled || stale()) throw new Error('cancelled');
+
+        // Settle + verify, still inside this run (the bar keeps counting up). Some forms unlock
+        // or re-render fields a moment after others are answered: fill only what is *really*
+        // still empty, once. Nothing is written after the run ends.
+        setStatus('Checking every answer stuck', false, 'busy');
+        await new Promise((r) => setTimeout(r, 600));
+        const stillEmpty = (HS.getQuestionFillState?.() || []).filter((st) => !st.filled);
+        if (stillEmpty.length && !stale()) {
+          const emptyIds = new Set(stillEmpty.map((st) => st.id));
+          const emptyKeys = new Set(stillEmpty.map((st) => progressQuestionKey(st.question)));
+          const retryList = fillableAnswers(allAnswers).filter(
+            (a) => a.answer && (emptyIds.has(a.id) || emptyKeys.has(progressQuestionKey(a.question)))
+          );
+          if (retryList.length) {
+            await HS.fillAnswers(retryList, {
+              onlyListed: true,
+              onItem: (item) => {
+                if (item.filled) onFillItem(item);
+              },
+            });
+          }
         }
-        // Final truth from the page
-        progressItems = progressItems.map((it) => {
-          if (it.id === '__resume__' || String(it.id).startsWith('__history_')) return it;
-          const now = stateOf(st, it);
-          if (!now) return it;
-          if (now.filled && !it.filled) return { ...it, filled: true, source: it.source && it.source !== 'unmatched' ? it.source : 'page' };
-          if (!now.filled && it.filled) return { ...it, filled: false, source: 'unmatched' };
-          return it;
+
+        // Final truth from the page: rows show what the form actually holds, so the
+        // percentage shown at the end is the real one and does not drop afterwards.
+        const finalState = HS.getQuestionFillState?.() || [];
+        const stateById = new Map(finalState.map((st) => [st.id, st]));
+        const stateByKey = new Map(finalState.map((st) => [progressQuestionKey(st.question), st]));
+        progressItems = progressItems.map((item) => {
+          if (item.id === '__resume__' || String(item.id).startsWith('__history_')) return item;
+          const st = stateById.get(item.id) || stateByKey.get(progressQuestionKey(item.question));
+          if (!st) return item;
+          if (st.filled) return { ...item, filled: true, source: item.source || 'page' };
+          return { ...item, filled: false, source: item.filled ? 'unmatched' : item.source };
         });
-        filled = progressItems.filter((it) => it.filled && it.id !== '__resume__').length;
 
         // Attach source only when fill succeeded — don't show profile/saved on empty controls
         const byId = new Map(allAnswers.map((a) => [a.id, a]));
@@ -3538,13 +3532,7 @@
       updateSteps();
       await persistDraft({ steps: { ...steps } });
 
-      let remembered = 0;
-      try {
-        const bulk = await rememberFilledAnswers();
-        remembered = bulk.saved || 0;
-      } catch {
-        /* non-fatal */
-      }
+      const remembered = 0;
 
       const consentCount = progressItems.filter((i) => i.source === 'consent' && i.filled).length;
       const { reqDone, reqTotal, bySource } = progressStats(progressItems);
@@ -3573,6 +3561,9 @@
       // Keep learning: user edits after autofill are remembered for the next app
       startAnswerLearningWatch();
 
+      // No delayed re-fills: the run above already settled and verified every field. Writing to
+      // the form after the run ended is what cleared / refilled answers the user could see.
+      if (!stale()) captureProgressBaseline();
     } catch (err) {
       if (String(err?.message || err) === 'cancelled') {
         renderAutofillProgress(progressItemsCache, { busy: false, expanded: false });

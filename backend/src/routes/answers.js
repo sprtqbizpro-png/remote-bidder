@@ -314,6 +314,15 @@ router.put('/fixed/:id', async (req, res) => {
   res.json(mapFixed(row));
 });
 
+/** Owner wipes every fixed answer (profile answers live in the profile and are not touched). */
+router.delete('/fixed', async (req, res) => {
+  if (!requireOwner(req, res)) return;
+  const removed = db.listFixedAnswers().length;
+  db.replaceFixedAnswers([]);
+  await flushDb();
+  res.json({ ok: true, removed });
+});
+
 router.delete('/fixed/:id', (req, res) => {
   if (!db.deleteFixedAnswer(req.params.id)) {
     return res.status(404).json({ error: 'Not found' });

@@ -1939,26 +1939,6 @@
       .filter((t) => t && !/^(select|choose|please select|--)/i.test(t));
   }
 
-  /**
-   * Question text per control, fixed the first time it is read. A filled dropdown shows its value
-   * right next to the input ("United States"), and re-reading the label after filling picked
-   * that value up as the question — the "Country" row then lost its field and fell back to todo.
-   */
-  const questionByElement = new WeakMap();
-  const VALUE_DISPLAY_RE =
-    /(single-?value|multi-?value|value-?container|__value|placeholder|selected|chip|\btag\b|indicator|token)/i;
-
-  /** Nodes that render the control's current value / chrome rather than its question. */
-  function isValueDisplayNode(node, el) {
-    if (!node) return true;
-    const cls = String(node.className?.baseVal ?? node.className ?? '');
-    if (VALUE_DISPLAY_RE.test(cls)) return true;
-    if (node.querySelector?.('[class*="single-value" i], [class*="singleValue"], [class*="placeholder" i]')) return true;
-    const text = normalizeLabel(node.innerText || '');
-    const shown = normalizeLabel(fieldValue(el) || (isComboboxLike(el) ? comboboxCommittedValue(el) : ''));
-    return !!text && !!shown && text.toLowerCase() === shown.toLowerCase();
-  }
-
   HS.collectQuestions = function collectQuestions() {
     const questions = [];
     const seen = new Set();
@@ -2031,10 +2011,6 @@
         let sib = el.previousElementSibling;
         for (let i = 0; i < 8 && sib; i++) {
           const raw = sib.innerText || '';
-          if (isValueDisplayNode(sib, el)) {
-            sib = sib.previousElementSibling;
-            continue;
-          }
           if (isAtsHelperNote(raw) || isBareAsteriskNode(sib)) {
             // Keep walking past helper / bare * to the real prompt
             sib = sib.previousElementSibling;
@@ -2060,11 +2036,7 @@
         }
       }
       if (question && isAtsHelperNote(question)) question = '';
-      // Keep the label this control had on first sight (before anything was filled)
-      const knownQuestion = questionByElement.get(el);
-      if (knownQuestion) question = knownQuestion;
       if (!question || question.length < 2) return;
-      questionByElement.set(el, question);
 
       const qk = normalizeLabel(question)
         .toLowerCase()
@@ -2114,13 +2086,8 @@
       questions.push(g);
     });
 
-    // One row per control: secondary collectors (asterisk labels, aria groups) must not add a
-    // second row for a field the input walk already has
-    const seenElements = new Set();
     return questions.filter((q) => {
       if (!q.element) return true;
-      if (seenElements.has(q.element)) return false;
-      seenElements.add(q.element);
       if (isHistoryField(q.element)) return false;
       // "*"-label rows point at the label; check the control it introduces
       if (q.type === 'unbound') {
@@ -2742,24 +2709,76 @@
       }
     }
 
-    const wrap =
-      el.closest('[class*="select"], [class*="Select"], [class*="control"], [class*="combobox"]') ||
-      el.parentElement;
-    if (wrap) {
-      const single = wrap.querySelector(
-        '[class*="singleValue"], [class*="SingleValue"], [class*="value-container"] [class*="value"]:not(input), [data-value]'
-      );
-      if (single && !single.contains(el)) {
-        const t = normalizeLabel(single.innerText || single.getAttribute('data-value') || '');
-        if (t && t.length < 200) return t;
-      }
-    }
+    const shown = comboboxDisplayedValue(el);
+    if (shown) return shown;
 
-    // Expanded=false + non-empty value usually means selection committed
+    // Select-style widgets (react-select & co.) keep the *search text* in the input: it is not
+    // the answer, and it is discarded on blur. Only plain autocomplete inputs keep typed text.
+    if (comboboxValueRoot(el)) return '';
     if (el.getAttribute('aria-expanded') === 'false' && el.value) {
       return normalizeLabel(el.value);
     }
     return normalizeLabel(fieldValue(el));
+  }
+
+  /** Selection display used by select-style dropdowns (react-select: `select__single-value`). */
+  const COMBO_VALUE_SELECTOR = [
+    '[class*="single-value"]',
+    '[class*="singleValue"]',
+    '[class*="SingleValue"]',
+    '[class*="multi-value__label"]',
+    '[class*="multiValue"] [class*="label"]',
+    '[class*="selected-value"]',
+    '[class*="selectedValue"]',
+    '[data-automation-id="selectedItem"]',
+    '[data-automation-id="promptOption"]',
+  ].join(', ');
+
+  /** Nearest ancestor (≤6 levels) that holds the dropdown's value display, if it is one. */
+  function comboboxValueRoot(el) {
+    let node = el.parentElement;
+    for (let i = 0; i < 6 && node && node !== document.body; i++) {
+      if (node.querySelector(COMBO_VALUE_SELECTOR)) return node;
+      const cls = String(node.className || '');
+      if (/(^|[\s_-])(control|value-?container|valueContainer)([\s_-]|$)/i.test(cls)) return node;
+      if (node.matches?.('[class*="field"], [class*="Field"], form, fieldset')) break;
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function comboboxDisplayedValue(el) {
+    const root = comboboxValueRoot(el);
+    if (!root) return '';
+    const parts = [];
+    root.querySelectorAll(COMBO_VALUE_SELECTOR).forEach((n) => {
+      if (n.contains(el) || /placeholder/i.test(String(n.className || ''))) return;
+      const t = normalizeLabel(n.innerText || n.textContent || n.getAttribute('data-value') || '');
+      if (t && t.length < 200 && !/^(select\.{0,3}|choose|please select)/i.test(t)) parts.push(t);
+    });
+    return parts.join(', ');
+  }
+
+  /** Options list for the dropdown, waiting for async search results (location, school…). */
+  async function waitForListboxOptions(el, timeoutMs = 2500) {
+    const start = Date.now();
+    let options = [];
+    while (Date.now() - start < timeoutMs) {
+      options = findOpenListboxOptions(el).filter(
+        (n) => !/^(loading|searching|no options?|no results?|type to search)\b/i.test(normalizeLabel(n.innerText || ''))
+      );
+      if (options.length) return options;
+      await sleep(120);
+    }
+    return options;
+  }
+
+  /** The dropdown really holds one of the wanted answers (not just a closed menu). */
+  function comboboxCommittedTo(el, candidates, chosenLabel = '') {
+    const got = comboboxCommittedValue(el);
+    if (!got) return false;
+    const wanted = chosenLabel ? [chosenLabel, ...candidates] : candidates;
+    return wanted.some((c) => optionMatchScore(c, got) >= 50 || optionMatchScore(got, c) >= 50);
   }
 
   function normalizeRememberedAnswer(answer) {
@@ -3481,150 +3500,110 @@
     });
   }
 
-  /** Poll for dropdown options (async typeaheads like Location load them over the network). */
-  async function waitForOptions(el, timeoutMs = 1500) {
-    const t0 = Date.now();
-    let options = findOpenListboxOptions(el);
-    while (!options.length && Date.now() - t0 < timeoutMs) {
-      await sleep(120);
-      options = findOpenListboxOptions(el);
-    }
-    return options;
-  }
-
-  /**
-   * True when the control *shows a committed selection* matching one of the labels.
-   * Read after blur: React dropdowns (react-select & co.) drop typed-but-unselected text on blur,
-   * so a value that survives blur is a real selection, not a leftover search string.
-   */
-  async function comboboxCommitted(el, labels) {
-    blurFieldQuiet(el);
-    await settleUi(120);
-    const shown = comboboxCommittedValue(el);
-    if (!shown) return false;
-    return labels.filter(Boolean).some((l) => {
-      const a = normalizeLabel(l).toLowerCase();
-      const b = shown.toLowerCase();
-      return a === b || optionMatchScore(l, shown) >= 70 || optionMatchScore(shown, l) >= 70;
-    });
-  }
-
-  /** No option matches the answer text: pick one the answer clearly refers to. */
-  function pickLooseOption(options, answer, question) {
-    const a = ` ${normalizeLabel(answer).toLowerCase()} `;
-    let best = null;
-    let bestLen = 0;
-    for (const node of options) {
-      const label = normalizeLabel(optionNodeText(node)).toLowerCase();
-      if (!label || label.length < 3) continue;
-      // The option's name appears in the answer ("I saw it on LinkedIn" → "LinkedIn")
-      if (a.includes(` ${label} `) || a.includes(` ${label}.`) || a.includes(` ${label},`)) {
-        if (label.length > bestLen) {
-          best = node;
-          bestLen = label.length;
-        }
-      }
-    }
-    if (best) return best;
-    if (/how\s+did\s+you\s+(hear|find|learn)|where\s+did\s+you\s+(hear|find|see)|referral\s*source|source\s+of\s+application/i.test(question || '')) {
-      for (const re of [/linkedin/i, /job\s*board|online\s*job|job\s*site|internet|online/i, /company\s*(web)?site|careers?\s*(page|site)/i, /^other\b/i]) {
-        const hit = options.find((n) => re.test(optionNodeText(n)));
-        if (hit) return hit;
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Select an option in a custom dropdown / typeahead. Returns true only when the selection is
-   * verifiably committed (see comboboxCommitted) — never for typed text the widget will discard.
-   */
   async function fillCombobox(el, answer, question) {
     const candidates = expandAnswerCandidates(answer, question);
     if (!candidates.length) return false;
     const filters = shortFilterCandidates(answer, question);
 
-    const openMenu = async () => {
-      focusFieldQuiet(el);
+    try {
+      el.focus();
+    } catch {
+      /* ignore */
+    }
+    // Open the menu
+    try {
+      el.click();
+    } catch {
+      /* ignore */
+    }
+    const opener =
+      el.closest('[class*="control"], [class*="select"], [role="combobox"]') || el.parentElement;
+    if (opener && opener !== el) {
       try {
-        el.click();
+        opener.click();
       } catch {
         /* ignore */
       }
-      const opener =
-        el.closest('[class*="control"], [class*="select"], [role="combobox"]') || el.parentElement;
-      if (opener && opener !== el) {
-        try {
-          opener.click();
-        } catch {
-          /* ignore */
-        }
-      }
-      await sleep(60);
-    };
+    }
+    await sleep(80);
 
-    const choose = async (node, labels) => {
-      clickOption(node);
-      await sleep(80);
-      if (await comboboxCommitted(el, labels)) return true;
-      // Some widgets only commit the highlighted option on Enter
-      focusFieldQuiet(el);
-      fireKey(el, 'Enter', 13);
-      await sleep(60);
-      return comboboxCommitted(el, labels);
-    };
-
-    await openMenu();
-
-    // 1) Full list (empty filter) so we can score the real options
+    // 1) Open full list first (empty filter) so we can score real options
     typeComboboxFilter(el, '');
     fireKey(el, 'ArrowDown', 40);
-    let options = await waitForOptions(el, 400);
+    let options = await waitForListboxOptions(el, 700);
+    if (!options.length) {
+      fireKey(el, 'ArrowDown', 40);
+      options = await waitForListboxOptions(el, 400);
+    }
+
     let best = pickBestOption(options, candidates);
 
-    // 2) Filter with short text (never an essay sentence); async lists need time to load
-    if (!best) {
+    // 2) If needed, filter with SHORT text (never the essay sentence). Search-as-you-type lists
+    //    (locations, schools) load results from the network: wait for them.
+    if (!best && filters.length) {
       for (const filterText of filters) {
         typeComboboxFilter(el, filterText);
         fireKey(el, 'ArrowDown', 40);
-        await sleep(100);
-        options = await waitForOptions(el, 2500);
+        options = await waitForListboxOptions(el, 2500);
         best = pickBestOption(options, candidates);
         if (best) break;
       }
     }
 
-    // 3) Nothing matches the text: an option the answer clearly names (or a safe "how did you hear" pick)
-    if (!best && options.length) best = pickLooseOption(options, answer, question);
-
+    // 3) If we matched an option, re-filter by that option's short label then click
     if (best) {
       const optLabel = optionNodeText(best);
-      if (await choose(best, [optLabel, ...candidates])) {
+      const shortOpt =
+        filters.find((f) => optionMatchScore(f, optLabel) >= 70) ||
+        (optLabel.length <= 32 ? optLabel : filters[0] || '');
+      if (shortOpt) {
+        typeComboboxFilter(el, shortOpt);
+        await sleep(100);
+        const refined = findOpenListboxOptions(el);
+        const again = pickBestOption(refined, candidates) || pickBestOption(refined, [optLabel, ...candidates]);
+        if (again) best = again;
+      }
+      const chosen = optionNodeText(best);
+      clickOption(best);
+      await sleep(120);
+      if (comboboxCommittedTo(el, candidates, chosen)) {
+        el.classList.add('hs-filled');
+        return true;
+      }
+      // Some UIs need Enter after highlight
+      fireKey(el, 'Enter', 13);
+      await sleep(120);
+      if (comboboxCommittedTo(el, candidates, chosen)) {
         el.classList.add('hs-filled');
         return true;
       }
     }
 
-    // Nothing committed: clear our filter text so the field is left clean, not half-typed
-    focusFieldQuiet(el);
-    typeComboboxFilter(el, '');
-    fireKey(el, 'Escape', 27);
-    blurFieldQuiet(el);
-    return false;
-  }
+    // Last resort: short filter + ArrowDown + Enter (still never essay text). Only counts when
+    // the dropdown then shows a matching selection — a closed menu alone proves nothing.
+    const fallbackFilter = filters[0] || '';
+    if (fallbackFilter) {
+      typeComboboxFilter(el, fallbackFilter);
+      await waitForListboxOptions(el, 1500);
+    }
+    fireKey(el, 'ArrowDown', 40);
+    await sleep(60);
+    fireKey(el, 'Enter', 13);
+    await sleep(150);
 
-  /**
-   * Free-text typeahead with no matching suggestion: keep typed text only if the widget keeps it
-   * after blur (plain autocomplete inputs do; select-style dropdowns throw it away).
-   */
-  async function commitFreeTextVerified(el, value) {
-    const ok = await commitTextField(el, value);
-    if (!ok) return false;
-    await settleUi(200);
-    const kept = normalizeLabel(fieldValue(el) || comboboxCommittedValue(el));
-    return !!kept && optionMatchScore(value, kept) >= 70;
+    const ok = comboboxCommittedTo(el, candidates);
+    if (ok) el.classList.add('hs-filled');
+    // Clear leftover filter text if nothing committed (avoid "No options" residue)
+    if (!ok) {
+      typeComboboxFilter(el, '');
+      try {
+        el.blur?.();
+      } catch {
+        /* ignore */
+      }
+    }
+    return ok;
   }
-
 
   function fillSelect(el, answer, question = '') {
     const candidates = expandAnswerCandidates(answer, question);
@@ -3925,6 +3904,15 @@
    * field is what made answers flash empty and refill (or end up empty).
    */
   HS.fillAnswers = async function fillAnswers(answers, opts = {}) {
+    HS.__autofillWriting = (HS.__autofillWriting || 0) + 1;
+    try {
+      return await fillAnswersImpl(answers, opts);
+    } finally {
+      HS.__autofillWriting -= 1;
+    }
+  };
+
+  async function fillAnswersImpl(answers, opts = {}) {
     const onItem = typeof opts.onItem === 'function' ? opts.onItem : null;
     const onlyListed = !!opts.onlyListed;
     const written = new Set();
@@ -4049,9 +4037,13 @@
         else if (q.type === 'combobox' || isComboboxLike(el)) {
           // Custom dropdowns need type + click the matching option (not just overwrite text)
           ok = await fillCombobox(el, String(answer), q.question);
-          // Typed text only counts if the control keeps it — select-style dropdowns discard it
-          // after blur, which is what made rows flip from filled back to "todo".
-          if (!ok) ok = await commitFreeTextVerified(el, String(answer));
+          if (!ok && !comboboxValueRoot(el)) {
+            // Plain autocomplete input (keeps typed text): type it, and count it only if the
+            // page still shows it after blur
+            await commitTextField(el, String(answer));
+            await sleep(250);
+            ok = !!comboboxCommittedValue(el);
+          }
         } else {
           // Text / email / textarea — commit into React form state (not just DOM .value)
           ok = await commitTextField(el, String(answer));
@@ -4222,7 +4214,7 @@
 
     const uniqueItems = HS.dedupeQuestionItems(items);
     return { filled, items: uniqueItems, total: uniqueItems.length };
-  };
+  }
 
   /** Current fill state for each collected question (for live progress updates). */
   HS.getQuestionFillState = function getQuestionFillState() {
@@ -4399,6 +4391,9 @@
       !!(t && t.closest && t.closest('#hs-panel, #hs-dock, #hs-info-dialog, #hs-job-dialog'));
 
     const onInputish = (e) => {
+      // Only real user input. Autofill's own synthetic events (typing dropdown filters, clicking
+      // options) used to be learned as answers — e.g. "Laf" saved for Location.
+      if (!e.isTrusted || HS.__autofillWriting) return;
       const t = e.target;
       if (!t || isOurUi(t)) return;
       const tag = (t.tagName || '').toUpperCase();
@@ -4661,7 +4656,16 @@
    * section's "Add" button when the resume has more than the form shows. Never overwrites
    * a value already on the page (e.g. from the site's own resume parser).
    */
-  HS.fillHistory = async function fillHistory(history, { shouldCancel } = {}) {
+  HS.fillHistory = async function fillHistory(history, opts = {}) {
+    HS.__autofillWriting = (HS.__autofillWriting || 0) + 1;
+    try {
+      return await fillHistoryImpl(history, opts);
+    } finally {
+      HS.__autofillWriting -= 1;
+    }
+  };
+
+  async function fillHistoryImpl(history, { shouldCancel } = {}) {
     const result = { filled: 0, entries: [] };
     for (const section of ['work', 'education']) {
       const data = (history?.[section] || []).slice(0, HISTORY_MAX[section]);
@@ -4714,7 +4718,7 @@
     }
     historyCache.at = 0;
     return result;
-  };
+  }
 
   HS.findResumeInputs = function findResumeInputs() {
     return Array.from(document.querySelectorAll('input[type="file"]')).filter((el) => {
